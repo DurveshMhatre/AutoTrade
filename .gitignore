@@ -1,0 +1,9 @@
+.env
+trading_env/
+automated_trading_env/
+*.db
+__pycache__/
+*.pyc
+.DS_Store
+logs/
+.pytest_cache/

@@ -1,0 +1,9 @@
+anthropic
+ccxt
+pandas
+pandas-ta
+python-dotenv
+aiohttp
+websockets
+pytest
+pytest-asyncio
