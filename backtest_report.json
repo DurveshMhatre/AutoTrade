@@ -1,0 +1,62 @@
+{
+  "report": {
+    "total_trades": 3,
+    "wins": 0,
+    "losses": 3,
+    "win_rate": 0.0,
+    "total_pnl": -58.81,
+    "final_balance": 941.19,
+    "return_pct": -5.88,
+    "avg_pnl": -19.6,
+    "profit_factor": 0.0,
+    "avg_win": 0.0,
+    "avg_loss": -19.6,
+    "best_trade": -19.21,
+    "worst_trade": -20.0,
+    "max_drawdown_pct": 5.88,
+    "sl_exits": 3,
+    "tp_exits": 0,
+    "avg_confidence": 0.7167,
+    "candles_processed": 800,
+    "signals_generated": 731,
+    "trades_attempted": 129
+  },
+  "trades": [
+    {
+      "side": "BUY",
+      "entry_price": 77551.02,
+      "exit_price": 76387.75,
+      "quantity": 0.017193,
+      "pnl": -20.0,
+      "exit_reason": "stop_loss",
+      "entry_idx": 207,
+      "exit_idx": 228,
+      "confidence": 0.7,
+      "reason": "Bullish trend with confirming momentum and volume"
+    },
+    {
+      "side": "BUY",
+      "entry_price": 77409.72,
+      "exit_price": 76248.57,
+      "quantity": 0.01688,
+      "pnl": -19.6,
+      "exit_reason": "stop_loss",
+      "entry_idx": 228,
+      "exit_idx": 243,
+      "confidence": 0.75,
+      "reason": "Bullish trend with confirming momentum and volume"
+    },
+    {
+      "side": "SELL",
+      "entry_price": 77249.08,
+      "exit_price": 78407.82,
+      "quantity": 0.016577,
+      "pnl": -19.21,
+      "exit_reason": "stop_loss",
+      "entry_idx": 246,
+      "exit_idx": 282,
+      "confidence": 0.7,
+      "reason": "Bearish trend with confirming momentum"
+    }
+  ]
+}

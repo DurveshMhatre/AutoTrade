@@ -1,0 +1,82 @@
+# Claude API Cost Analysis — Automated Trading Bot
+
+## How Your Bot Uses the API
+
+Your bot makes **2 API calls per cycle**, running every **5 minutes** (288 cycles/day):
+
+```mermaid
+flowchart LR
+    A["⏰ Every 5 min"] --> B["1️⃣ Orchestrator Agent"]
+    B -->|analyze=true ~50%| C["2️⃣ Trend Agent"]
+    B -->|analyze=false ~50%| D["Sleep 60s"]
+    C --> E["Risk Manager ❌ No API"]
+    E --> F["Executor ❌ No API"]
+```
+
+> [!IMPORTANT]
+> Only the **Orchestrator** and **Trend Agent** call Claude. Risk manager, executor, data feed, indicators — all run locally with **zero API cost**.
+
+---
+
+## Token Usage Per Call
+
+| Component | System Prompt | User Prompt (data) | Output | Total Input | Total Output |
+|-----------|:---:|:---:|:---:|:---:|:---:|
+| **Orchestrator** | ~330 tokens | ~350 tokens | ~70 tokens | **680 tokens** | **70 tokens** |
+| **Trend Agent** | ~400 tokens | ~300 tokens | ~120 tokens | **700 tokens** | **120 tokens** |
+| **Backtest Analysis** (occasional) | ~100 tokens | ~1,000 tokens | ~1,500 tokens | **1,100 tokens** | **1,500 tokens** |
+
+---
+
+## Daily Usage Estimate (288 cycles/day)
+
+| Component | Calls/Day | Input Tokens/Day | Output Tokens/Day |
+|-----------|:---:|:---:|:---:|
+| Orchestrator (always runs) | 288 | 195,840 | 20,160 |
+| Trend Agent (~50% of cycles) | ~144 | 100,800 | 17,280 |
+| Backtest (1-2 runs/day) | ~2 | 2,200 | 3,000 |
+| **DAILY TOTAL** | **~434** | **~298,840 (0.30 MTok)** | **~40,440 (0.04 MTok)** |
+
+---
+
+## 💰 Daily & Monthly Cost by Model
+
+| Model | Input Rate | Output Rate | **Daily Cost** | **Monthly Cost (30d)** |
+|-------|:---:|:---:|:---:|:---:|
+| **Claude Haiku 4.5** ⭐ | $1.00/MTok | $5.00/MTok | **$0.50** | **$15.00** |
+| **Claude Sonnet 4.6** | $3.00/MTok | $15.00/MTok | **$1.50** | **$45.00** |
+| **Claude Opus 4.6** | $5.00/MTok | $25.00/MTok | **$2.50** | **$75.00** |
+
+> [!TIP]
+> **With Prompt Caching** (system prompts are identical every call), you can reduce input costs by **up to 90%** on cached tokens. This would bring Haiku down to **~$0.15/day** and Sonnet to **~$0.55/day**.
+
+---
+
+## 🎯 Recommendation
+
+| Budget | Model | Lasts | Verdict |
+|:---:|:---:|:---:|:---|
+| **$5** | Haiku 4.5 | ~10 days | ⚠️ Too tight, will run out mid-month |
+| **$20** | Haiku 4.5 | ~40 days | ✅ **BEST VALUE** — comfortable buffer for a full month |
+| **$20** | Sonnet 4.6 | ~13 days | ⚠️ Tight for Sonnet |
+| **$50** | Sonnet 4.6 | ~33 days | ✅ **Sweet spot if you want smarter analysis** |
+| **$50** | Haiku 4.5 | ~100 days | ✅ 3+ months of worry-free running |
+| **$100** | Sonnet 4.6 | ~66 days | ✅ 2 months, good for heavy backtest usage |
+
+### My Pick:
+
+> [!IMPORTANT]
+> **Start with $20 using Claude Haiku 4.5.** It's more than enough for structured JSON tasks (orchestrator decisions + trade signals). Haiku is fast, cheap, and perfectly capable for this use case.
+>
+> Only upgrade to Sonnet ($50) if you find Haiku's analysis quality lacking in the backtest reviews.
+
+---
+
+## Why Haiku Works Great Here
+
+Your bot only needs Claude to:
+1. **Output small JSON** — `{"analyze": true, "risk_level": "low", ...}` (~70 tokens)
+2. **Follow strict rules** — the system prompts define exact conditions, no creative reasoning needed
+3. **Be fast** — Haiku is 3-5x faster than Sonnet, meaning quicker trade decisions
+
+These are exactly the tasks Haiku excels at. Sonnet/Opus are overkill for structured, rule-following JSON output.
