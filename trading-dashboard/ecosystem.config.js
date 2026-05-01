@@ -1,8 +1,8 @@
 module.exports = {
   apps: [{
     name: "trading-dashboard-api",
-    script: "uvicorn",
-    args: "backend.main:app --host 0.0.0.0 --port 8001 --workers 1",
+    script: "python3",
+    args: "-m uvicorn backend.main:app --host 0.0.0.0 --port 8001 --workers 1",
     cwd: "/root/AutoTrade/trading-dashboard",
     interpreter: "none",
     env_production: {
