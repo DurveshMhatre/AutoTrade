@@ -7,7 +7,7 @@ module.exports = {
     interpreter: "none",
     env_production: {
       NODE_ENV: "production",
-      DB_PATH: "/root/AutoTrade/trading.db",
+      DB_PATH: "/root/AutoTrade/trading_bot.db",
       CORS_ORIGINS: '["http://77.42.69.63"]',
     },
     watch: false,
