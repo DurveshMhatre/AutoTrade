@@ -136,12 +136,52 @@ async def run_bot() -> None:
                 orch_result.get("reason"),
             )
 
-            # ── d) If orchestrator says no, sleep and continue ──────
+            # ── d) If orchestrator says no, save decision and sleep ───
             if not orch_result.get("analyze", False):
+                reason = orch_result.get("reason", "unknown")
                 logger.info(
                     "Orchestrator blocked analysis: %s -- sleeping 60s",
-                    orch_result.get("reason"),
+                    reason,
                 )
+
+                # Log BB width for debugging
+                bb_w = market_data.get("bb_upper", 0) - market_data.get("bb_lower", 0)
+                close_p = market_data.get("close", 1)
+                logger.info(
+                    "  BB width: $%.2f (%.3f%% of close=$%.2f)",
+                    bb_w, (bb_w / close_p * 100) if close_p else 0, close_p,
+                )
+
+                # Save blocked decision to DB (so dashboard shows history)
+                blocked_decision = {
+                    "timestamp": int(time.time()),
+                    "signal": "HOLD",
+                    "confidence": orch_result.get("confidence", 0),
+                    "reason": f"orchestrator_blocked: {reason}",
+                    "approved": 0,
+                }
+                try:
+                    save_decision(db, blocked_decision)
+                except Exception:
+                    pass
+
+                # Send periodic heartbeat so user knows bot is alive
+                if not hasattr(run_bot, "_blocked_count"):
+                    run_bot._blocked_count = 0
+                run_bot._blocked_count += 1
+
+                if run_bot._blocked_count % 60 == 1:  # First block + every ~1 hour
+                    try:
+                        await send_telegram_alert(
+                            f"🤖 *BOT ALIVE* — Monitoring market\n"
+                            f"Status: `HOLD` (blocked: {reason})\n"
+                            f"BTC: `${close_p:,.2f}` | RSI: `{market_data.get('rsi', 0):.1f}`\n"
+                            f"Trend: `{market_data.get('trend', 'unknown')}` | "
+                            f"BB width: `${bb_w:.2f}`"
+                        )
+                    except Exception:
+                        pass
+
                 await asyncio.sleep(60)
                 continue
 

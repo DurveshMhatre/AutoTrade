@@ -83,6 +83,14 @@ def _validate(decision: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Squeeze bypass counter — prevents the bot from being permanently stuck
+# in low-volatility markets. Every N cycles, allow analysis even if in squeeze.
+# ---------------------------------------------------------------------------
+_squeeze_block_count = 0
+_SQUEEZE_BYPASS_EVERY = 5  # Allow analysis every 5th blocked cycle
+
+
+# ---------------------------------------------------------------------------
 # LOCAL rule-based orchestrator (FREE — no API calls)
 # ---------------------------------------------------------------------------
 def _local_orchestrator(market_data: dict, portfolio: dict) -> dict:
@@ -91,6 +99,8 @@ def _local_orchestrator(market_data: dict, portfolio: dict) -> dict:
 
     This is 100% FREE — no API calls needed.
     """
+    global _squeeze_block_count
+
     rsi = market_data.get("rsi") or 50.0
     trend = market_data.get("trend", "neutral")
     volatility = market_data.get("volatility", "normal")
@@ -132,15 +142,35 @@ def _local_orchestrator(market_data: dict, portfolio: dict) -> dict:
         }
 
     # 3. Not in a Bollinger Band squeeze
+    #    Threshold lowered from 0.5% to 0.2% — BTC at $70k+ means
+    #    the old 0.5% ($385 width) was too aggressive for modern
+    #    low-volatility BTC regimes. 0.2% ($154 width) is more
+    #    realistic and still filters truly flat markets.
     if close > 0:
         bb_width_pct = (bb_upper - bb_lower) / close if close else 0
-        if bb_width_pct < 0.005:  # < 0.5% of close
-            return {
-                "analyze": False,
-                "reason": "bollinger_squeeze",
-                "risk_level": "medium",
-                "confidence": 0.25,
-            }
+        logger.debug(
+            "BB width: $%.2f (%.3f%% of close) | threshold: 0.200%%",
+            bb_upper - bb_lower, bb_width_pct * 100,
+        )
+        if bb_width_pct < 0.002:  # < 0.2% of close
+            _squeeze_block_count += 1
+            # Allow analysis every Nth squeeze block so the bot
+            # doesn't sit idle for hours in consolidation markets
+            if _squeeze_block_count % _SQUEEZE_BYPASS_EVERY == 0:
+                logger.info(
+                    "Bollinger squeeze detected BUT bypassing (cycle %d) — "
+                    "allowing analysis to prevent permanent stall",
+                    _squeeze_block_count,
+                )
+            else:
+                return {
+                    "analyze": False,
+                    "reason": "bollinger_squeeze",
+                    "risk_level": "medium",
+                    "confidence": 0.25,
+                }
+        else:
+            _squeeze_block_count = 0  # Reset when squeeze ends
 
     # 4. Portfolio capacity
     if open_positions >= max_positions:
