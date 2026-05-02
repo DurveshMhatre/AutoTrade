@@ -6,6 +6,7 @@ import EquityChart from '../components/EquityChart'
 import OrdersTable from '../components/OrdersTable'
 import AgentDecisionsLog from '../components/AgentDecisionsLog'
 import OpenPositions from '../components/OpenPositions'
+import AIAnalystPanel from '../components/AIAnalystPanel'
 
 export default function Dashboard({ wsData = {} }) {
   const { data: summary, loading: summaryLoading } = useOrderSummary()
@@ -86,6 +87,11 @@ export default function Dashboard({ wsData = {} }) {
             loading={decisionsLoading}
           />
         </div>
+      </div>
+
+      {/* ── Row 4: AI Trade Analyst ── */}
+      <div style={{ marginBottom: 24 }}>
+        <AIAnalystPanel />
       </div>
     </div>
   )

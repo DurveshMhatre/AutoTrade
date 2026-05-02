@@ -27,6 +27,7 @@ CORS_ORIGINS = [
 
 # ── API Keys ────────────────────────────────────────────────────────
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 # ── Server ──────────────────────────────────────────────────────────
 API_HOST = os.getenv("API_HOST", "0.0.0.0")

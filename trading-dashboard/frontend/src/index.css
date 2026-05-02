@@ -881,3 +881,387 @@ a:hover {
 @media (max-width: 1024px) {
   .triple-layout { grid-template-columns: 1fr; }
 }
+
+/* =====================================================
+   AI Analyst Panel
+   ===================================================== */
+
+.analyst-panel {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 0;
+  overflow: hidden;
+  position: relative;
+}
+
+.analyst-panel::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, var(--sky), #8b5cf6, var(--emerald));
+  opacity: 0.8;
+}
+
+.analyst-header {
+  padding: 20px 24px 0;
+}
+
+.analyst-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.analyst-icon {
+  color: var(--sky);
+}
+
+.analyst-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.analyst-powered {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--bg-tertiary);
+  padding: 3px 10px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border);
+  margin-left: auto;
+}
+
+.analyst-timestamp {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 6px;
+}
+
+/* ── Type Selector ──────────────────────── */
+.analyst-type-selector {
+  display: flex;
+  gap: 8px;
+  padding: 16px 24px;
+  flex-wrap: wrap;
+}
+
+.analyst-type-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 16px;
+  font-size: 12px;
+  font-weight: 500;
+  font-family: var(--font-sans);
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.analyst-type-btn:hover:not(:disabled) {
+  border-color: var(--border-hover);
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.analyst-type-btn.active {
+  background: var(--sky-dim);
+  color: var(--sky);
+  border-color: var(--sky);
+}
+
+.analyst-type-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── Actions Row ────────────────────────── */
+.analyst-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 24px 16px;
+}
+
+.analyst-run-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 24px;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: var(--font-sans);
+  border-radius: var(--radius-md);
+  border: none;
+  background: linear-gradient(135deg, var(--sky), #8b5cf6);
+  color: #fff;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 2px 8px rgba(56, 189, 248, 0.25);
+}
+
+.analyst-run-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 16px rgba(56, 189, 248, 0.35);
+}
+
+.analyst-run-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.analyst-cost-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+@keyframes analyst-spin {
+  to { transform: rotate(360deg); }
+}
+
+.analyst-spinner {
+  animation: analyst-spin 1s linear infinite;
+}
+
+/* ── Error State ────────────────────────── */
+.analyst-error {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 24px 16px;
+  padding: 12px 16px;
+  background: var(--rose-dim);
+  border: 1px solid var(--rose);
+  border-radius: var(--radius-md);
+  color: var(--rose);
+  font-size: 13px;
+}
+
+/* ── Result Area ────────────────────────── */
+.analyst-result {
+  padding: 0 24px 24px;
+}
+
+.analyst-result-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+/* Risk Badge */
+.risk-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: var(--radius-full);
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.risk-emerald {
+  background: var(--emerald-dim);
+  color: var(--emerald);
+  border: 1px solid var(--emerald);
+}
+
+.risk-amber {
+  background: var(--amber-dim);
+  color: var(--amber);
+  border: 1px solid var(--amber);
+}
+
+.risk-rose {
+  background: var(--rose-dim);
+  color: var(--rose);
+  border: 1px solid var(--rose);
+}
+
+.risk-score {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.risk-label {
+  font-size: 11px;
+  font-weight: 500;
+  opacity: 0.8;
+}
+
+/* Headline */
+.analyst-headline {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.4;
+}
+
+/* Markdown Body */
+.analyst-body {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.7;
+  margin-bottom: 20px;
+  max-height: 400px;
+  overflow-y: auto;
+  padding-right: 8px;
+}
+
+.analyst-body::-webkit-scrollbar {
+  width: 5px;
+}
+
+.analyst-body::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+
+.analyst-h2, .analyst-h3, .analyst-h4 {
+  color: var(--text-primary);
+  margin: 16px 0 8px;
+}
+
+.analyst-h2 { font-size: 16px; font-weight: 600; }
+.analyst-h3 { font-size: 14px; font-weight: 600; }
+.analyst-h4 { font-size: 13px; font-weight: 600; }
+
+.analyst-p {
+  margin: 8px 0;
+}
+
+.analyst-li {
+  list-style: none;
+  padding-left: 16px;
+  position: relative;
+  margin: 4px 0;
+}
+
+.analyst-li::before {
+  content: '•';
+  position: absolute;
+  left: 0;
+  color: var(--sky);
+  font-weight: bold;
+}
+
+.analyst-code {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow-x: auto;
+  margin: 8px 0;
+}
+
+.analyst-inline-code {
+  background: var(--bg-tertiary);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+/* ── Recommendations Card ──────────────── */
+.analyst-recommendations {
+  background: var(--bg-secondary);
+  border-left: 3px solid var(--emerald);
+  border-radius: var(--radius-md);
+  padding: 16px 20px;
+  margin-bottom: 12px;
+}
+
+.analyst-rec-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--emerald);
+  margin-bottom: 12px;
+}
+
+.analyst-rec-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.analyst-rec-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 6px 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.analyst-rec-check {
+  color: var(--emerald);
+  font-weight: 700;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+/* ── Watch Out Card ─────────────────────── */
+.analyst-watchout {
+  background: var(--bg-secondary);
+  border-left: 3px solid var(--amber);
+  border-radius: var(--radius-md);
+  padding: 16px 20px;
+}
+
+.analyst-watchout-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--amber);
+  margin-bottom: 8px;
+}
+
+.analyst-watchout-text {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  margin: 0;
+}
+
+/* ── Empty State ────────────────────────── */
+.analyst-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 24px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.analyst-empty p {
+  margin: 8px 0 0;
+  font-size: 14px;
+}
+
+.analyst-empty-sub {
+  font-size: 12px !important;
+  color: var(--text-muted);
+  opacity: 0.7;
+}
+

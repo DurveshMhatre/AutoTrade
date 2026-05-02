@@ -5,3 +5,4 @@ aiofiles
 websockets
 pydantic
 httpx
+anthropic
