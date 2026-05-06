@@ -164,6 +164,7 @@ async def run_bot() -> None:
     print("=" * 60)
 
     # 5. Infinite loop
+    last_error_str = None
     while True:
         try:
             cycle_start = time.time()
@@ -354,6 +355,7 @@ async def run_bot() -> None:
             )
 
             # ── i) Sleep 300s (5-minute candle rhythm) ──────────────
+            last_error_str = None
             await asyncio.sleep(300)
 
         # 6. Clean shutdown on Ctrl+C
@@ -366,12 +368,17 @@ async def run_bot() -> None:
             tb = traceback.format_exc()
             logger.error("UNEXPECTED ERROR: %s\n%s", exc, tb)
 
-            try:
-                await send_telegram_alert(
-                    f"*BOT ERROR*\n```\n{str(exc)[:500]}\n```"
-                )
-            except Exception:  # noqa: BLE001
-                pass
+            current_error_str = str(exc)
+            if current_error_str != last_error_str:
+                try:
+                    await send_telegram_alert(
+                        f"*BOT ERROR*\n```\n{current_error_str[:500]}\n```"
+                    )
+                    last_error_str = current_error_str
+                except Exception:  # noqa: BLE001
+                    pass
+            else:
+                logger.info("Skipping Telegram alert (same error as last time)")
 
             logger.info("Sleeping 30s before retry ...")
             await asyncio.sleep(30)
