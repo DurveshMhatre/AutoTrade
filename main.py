@@ -21,7 +21,7 @@ from dotenv import load_dotenv
 # ── Core ────────────────────────────────────────────────────────────
 from core.data_feed import fetch_ohlcv
 from core.indicators import compute_indicators
-from core.database import init_db, save_trade, save_decision
+from core.database import init_db, save_trade, save_decision, get_open_trades, update_trade_status
 from core.risk_manager import evaluate_trade
 
 # ── Agents ──────────────────────────────────────────────────────────
@@ -66,6 +66,66 @@ def _config_dict() -> dict:
         "TAKE_PROFIT_PCT": config.TAKE_PROFIT_PCT,
     }
 
+
+async def sync_portfolio(db, current_price: float, portfolio: dict, testnet_flag: bool) -> None:
+    """Check open trades and close them if TP or SL is hit."""
+    open_trades = get_open_trades(db)
+    
+    # Sync portfolio counter with actual open trades in DB
+    portfolio["open_positions"] = len(open_trades)
+
+    for trade in open_trades:
+        side = trade["side"].lower()
+        entry_price = trade["price"]
+        quantity = trade["quantity"]
+        sl = trade["stop_loss"]
+        tp = trade["take_profit"]
+        
+        close_trade = False
+        pnl = 0.0
+        reason = ""
+
+        if side == "buy":
+            pnl = (current_price - entry_price) * quantity
+            if sl > 0 and current_price <= sl:
+                close_trade = True
+                reason = "Stop Loss Hit"
+            elif tp > 0 and current_price >= tp:
+                close_trade = True
+                reason = "Take Profit Hit"
+        elif side == "sell":
+            pnl = (entry_price - current_price) * quantity
+            if sl > 0 and current_price >= sl:
+                close_trade = True
+                reason = "Stop Loss Hit"
+            elif tp > 0 and current_price <= tp:
+                close_trade = True
+                reason = "Take Profit Hit"
+
+        if close_trade:
+            logger.info("Closing trade ID %s: %s at $%.2f (PnL: $%.2f)", trade["id"], reason, current_price, pnl)
+            
+            # Execute counter-trade
+            exit_side = "sell" if side == "buy" else "buy"
+            order_result = await place_order(
+                exit_side, trade["symbol"], quantity, testnet=testnet_flag
+            )
+            
+            if order_result.get("status") != "failed":
+                update_trade_status(db, trade["id"], "closed", current_price, pnl)
+                portfolio["open_positions"] -= 1
+                portfolio["daily_pnl"] += pnl
+                
+                try:
+                    await send_telegram_alert(
+                        f"*TRADE CLOSED*\n"
+                        f"Reason: `{reason}`\n"
+                        f"Side: `{exit_side.upper()}`\n"
+                        f"Price: `${current_price:,.2f}`\n"
+                        f"PnL: `${pnl:,.2f}`"
+                    )
+                except Exception:
+                    pass
 
 # ────────────────────────────────────────────────────────────────────
 # Main bot loop
@@ -125,6 +185,9 @@ async def run_bot() -> None:
                 market_data.get("trend"),
                 market_data.get("volatility"),
             )
+
+            # ── b.5) Sync portfolio & check stops ───────────────────
+            await sync_portfolio(db, market_data.get("close", 0), portfolio, testnet_flag)
 
             # ── c) Orchestrator gate ────────────────────────────────
             orch_result = run_orchestrator(market_data, portfolio)
@@ -216,6 +279,7 @@ async def run_bot() -> None:
                 )
 
                 # Save trade to database
+                trade_status = "open" if order_result.get("status") != "failed" else "failed"
                 trade_record = {
                     "timestamp": int(time.time()),
                     "symbol": config.SYMBOL,
@@ -224,7 +288,9 @@ async def run_bot() -> None:
                     "quantity": qty,
                     "reason": signal.get("reason", ""),
                     "pnl": 0.0,
-                    "status": order_result.get("status", "failed"),
+                    "status": trade_status,
+                    "stop_loss": risk_result.get("stop_loss_price", 0),
+                    "take_profit": risk_result.get("take_profit_price", 0),
                 }
                 save_trade(db, trade_record)
 

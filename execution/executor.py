@@ -36,13 +36,21 @@ def _build_exchange(*, testnet: bool = True) -> ccxt.binance:
             "apiKey": os.getenv("BINANCE_API_KEY", ""),
             "secret": os.getenv("BINANCE_SECRET", ""),
             "enableRateLimit": True,
-            "options": {"defaultType": "spot"},
+            "options": {
+                "defaultType": "spot",
+                "fetchMarkets": ["spot"],
+                "warnOnFetchOpenOrdersWithoutSymbol": False,
+            },
             "session": session,
         }
     )
 
     if testnet:
         exchange.set_sandbox_mode(True)
+        # Prevent CCXT from hitting the unstable futures testnet
+        if "api" in exchange.urls and isinstance(exchange.urls["api"], dict):
+            exchange.urls["api"]["fapiPublic"] = "https://testnet.binance.vision/api/v3"
+            exchange.urls["api"]["fapiPrivate"] = "https://testnet.binance.vision/api/v3"
 
     return exchange
 
