@@ -136,6 +136,74 @@ async def fetch_ohlcv(
         await _close_exchange(exchange)
 
 
+# ─── 1b. Multi-Timeframe OHLCV ─────────────────────────────────────
+
+async def fetch_multi_timeframe(
+    symbol: str = "BTC/USDT",
+    timeframes: dict | None = None,
+    max_retries: int = 3,
+) -> dict[str, list[dict]]:
+    """Fetch OHLCV candles for multiple timeframes using a single exchange session.
+
+    Parameters
+    ----------
+    symbol : str
+        Trading pair.
+    timeframes : dict | None
+        Mapping of ``{timeframe: candle_limit}``.
+        Defaults to ``{"1h": 200, "4h": 100, "1d": 60}``.
+    max_retries : int
+        Retry count per timeframe.
+
+    Returns
+    -------
+    dict[str, list[dict]]
+        ``{"1h": [...candles...], "4h": [...], "1d": [...]}``
+        Timeframes that fail after all retries are returned as empty lists.
+    """
+    if timeframes is None:
+        timeframes = {"1h": 200, "4h": 100, "1d": 60}
+
+    exchange = _build_exchange()
+    result: dict[str, list[dict]] = {}
+
+    try:
+        for tf, limit in timeframes.items():
+            candles: list[dict] = []
+
+            for attempt in range(1, max_retries + 1):
+                try:
+                    raw = await exchange.fetch_ohlcv(symbol, tf, limit=limit)
+                    candles = [
+                        {
+                            "timestamp": row[0],
+                            "open": row[1],
+                            "high": row[2],
+                            "low": row[3],
+                            "close": row[4],
+                            "volume": row[5],
+                        }
+                        for row in raw
+                    ]
+                    _log(f"fetch_multi_timeframe: {tf} → {len(candles)} candles")
+                    break  # success — move to next timeframe
+
+                except (ccxt.NetworkError, ccxt.ExchangeError, ExchangeNotAvailable) as exc:
+                    _log(
+                        f"fetch_multi_timeframe: {tf} {type(exc).__name__} "
+                        f"(attempt {attempt}/{max_retries}): {exc}"
+                    )
+                    if attempt < max_retries:
+                        await asyncio.sleep(2 ** attempt)
+
+            result[tf] = candles
+
+    finally:
+        await _close_exchange(exchange)
+
+    return result
+
+
 # ─── 2. Current ticker price ────────────────────────────────────────
 
 async def get_current_price(symbol: str = "BTC/USDT") -> float:

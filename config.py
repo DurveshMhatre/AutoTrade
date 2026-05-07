@@ -12,3 +12,16 @@ TAKE_PROFIT_PCT = 0.03
 # False = FREE local rules (no API needed)
 # True  = Claude AI (needs ANTHROPIC_API_KEY in .env)
 USE_AI_AGENTS = False
+
+# ── Multi-Timeframe Settings ───────────────────────────────────
+MTF_TIMEFRAMES = {"1h": 200, "4h": 100, "1d": 60}
+
+# ── Regime Agent Settings ──────────────────────────────────────
+REGIME_ADX_TREND_THRESHOLD = 25       # ADX above this = trending
+REGIME_ADX_CHOP_THRESHOLD = 20        # ADX below this = chop/no direction
+REGIME_CACHE_SECONDS = 900            # Cache regime result for 15 minutes
+
+# ── Sentiment Agent Settings ──────────────────────────────────
+SENTIMENT_FEAR_EXTREME = 20           # Below = extreme fear
+SENTIMENT_GREED_EXTREME = 80          # Above = extreme greed
+FUNDING_OVERLEVERAGED_THRESHOLD = 0.001  # 0.1% per 8h = overleveraged

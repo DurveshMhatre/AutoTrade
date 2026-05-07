@@ -4,6 +4,17 @@ main.py -- Automated BTC/USDT Trading Bot Loop
 Ties together every module: data feed, indicators, orchestrator,
 trend agent, risk manager, executor, database, and Telegram alerts.
 
+Phase 1 Pipeline (Elite Upgrade):
+  1. Fetch 5M candles (existing)
+  2. Fetch MTF candles — 1H, 4H, 1D (NEW)
+  3. Compute indicators — 5M + per-timeframe (existing + NEW)
+  4. Run Regime Agent (NEW)
+  5. Run MTF Confluence Agent (NEW)
+  6. Run Sentiment Agent (NEW)
+  7. Run Enhanced Orchestrator (passes regime + mtf + sentiment)
+  8. If approved → Run Trend Agent (existing)
+  9. Risk Manager + Execute (existing)
+
 Usage:
     python main.py
 """
@@ -19,14 +30,17 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 
 # ── Core ────────────────────────────────────────────────────────────
-from core.data_feed import fetch_ohlcv
-from core.indicators import compute_indicators
-from core.database import init_db, save_trade, save_decision, get_open_trades, update_trade_status
+from core.data_feed import fetch_ohlcv, fetch_multi_timeframe
+from core.indicators import compute_indicators, compute_mtf_indicators
+from core.database import init_db, save_trade, save_decision, get_open_trades, update_trade_status, save_regime
 from core.risk_manager import evaluate_trade
 
 # ── Agents ──────────────────────────────────────────────────────────
 from agents.orchestrator import run_orchestrator
 from agents.trend_agent import run_trend_agent
+from agents.regime_agent import run_regime_agent
+from agents.mtf_agent import run_mtf_agent
+from agents.sentiment_agent import run_sentiment_agent
 
 # ── Execution ───────────────────────────────────────────────────────
 from execution.executor import place_order
@@ -153,7 +167,7 @@ async def run_bot() -> None:
 
     # 4. Startup banner
     print("=" * 60)
-    print(f"=== CRYPTO BOT STARTED === Testnet: {testnet_flag}")
+    print(f"=== CRYPTO BOT STARTED (ELITE v1) === Testnet: {testnet_flag}")
     print(f"    Symbol   : {config.SYMBOL}")
     print(f"    Timeframe: {config.TIMEFRAME}")
     print(f"    Candles  : {config.CANDLE_LIMIT}")
@@ -161,6 +175,8 @@ async def run_bot() -> None:
     print(f"    Min Conf : {config.MIN_CONFIDENCE}")
     print(f"    Risk/Trd : {config.RISK_PER_TRADE_PCT * 100:.1f}%")
     print(f"    SL / TP  : {config.STOP_LOSS_PCT * 100:.1f}% / {config.TAKE_PROFIT_PCT * 100:.1f}%")
+    print(f"    MTF TFs  : {list(config.MTF_TIMEFRAMES.keys())}")
+    print(f"    AI Mode  : {config.USE_AI_AGENTS}")
     print("=" * 60)
 
     # 5. Infinite loop
@@ -170,28 +186,105 @@ async def run_bot() -> None:
             cycle_start = time.time()
             logger.info("--- Cycle start: %s ---", _ts())
 
-            # ── a) Fetch OHLCV candles ──────────────────────────────
+            # ── a) Fetch OHLCV candles (5M — primary timeframe) ────
             logger.info("Fetching OHLCV data for %s ...", config.SYMBOL)
             candles = await fetch_ohlcv(
                 config.SYMBOL, config.TIMEFRAME, config.CANDLE_LIMIT
             )
-            logger.info("Received %d candles", len(candles))
+            logger.info("Received %d candles (5M)", len(candles))
 
-            # ── b) Compute indicators ──────────────────────────────
+            # ── b) Compute 5M indicators ───────────────────────────
             market_data = compute_indicators(candles)
             logger.info(
-                "Indicators: close=%.2f  RSI=%.2f  trend=%s  vol=%s",
+                "Indicators: close=%.2f  RSI=%.2f  trend=%s  vol=%s  ADX=%.1f",
                 market_data.get("close", 0),
                 market_data.get("rsi", 0),
                 market_data.get("trend"),
                 market_data.get("volatility"),
+                market_data.get("adx") or 0,
             )
 
-            # ── b.5) Sync portfolio & check stops ───────────────────
+            # ── b.5) Sync portfolio & check stops ──────────────────
             await sync_portfolio(db, market_data.get("close", 0), portfolio, testnet_flag)
 
-            # ── c) Orchestrator gate ────────────────────────────────
-            orch_result = run_orchestrator(market_data, portfolio)
+            # ── c) Fetch MTF candles (1H, 4H, 1D) — Phase 1 ───────
+            logger.info("Fetching multi-timeframe data ...")
+            mtf_candles = await fetch_multi_timeframe(
+                config.SYMBOL, config.MTF_TIMEFRAMES
+            )
+
+            # ── d) Compute MTF indicators ──────────────────────────
+            mtf_indicators = {"5m": market_data}
+            for tf, tf_candles in mtf_candles.items():
+                if tf_candles:
+                    mtf_indicators[tf] = compute_mtf_indicators(tf_candles)
+                    logger.info(
+                        "  %s: close=%.2f  trend=%s  ADX=%.1f  RSI=%.1f",
+                        tf.upper(),
+                        mtf_indicators[tf].get("close") or 0,
+                        mtf_indicators[tf].get("trend"),
+                        mtf_indicators[tf].get("adx") or 0,
+                        mtf_indicators[tf].get("rsi") or 0,
+                    )
+                else:
+                    mtf_indicators[tf] = {}
+                    logger.warning("  %s: no data available", tf.upper())
+
+            # ── e) Run Regime Agent — Phase 1 ──────────────────────
+            regime_result = run_regime_agent(mtf_indicators)
+            logger.info(
+                "Regime: %s (conf=%.2f, bias=%s, multiplier=%.2f)",
+                regime_result.get("regime"),
+                regime_result.get("confidence", 0),
+                regime_result.get("strategy_bias"),
+                regime_result.get("position_size_multiplier", 0),
+            )
+
+            # ── f) Run MTF Confluence Agent — Phase 1 ──────────────
+            mtf_result = run_mtf_agent(mtf_indicators)
+            logger.info(
+                "MTF: score=%+d  daily=%s  4H=%s  approved=%s",
+                mtf_result.get("confluence_score", 0),
+                mtf_result.get("daily_bias"),
+                mtf_result.get("4h_structure"),
+                mtf_result.get("trade_approved"),
+            )
+
+            # ── g) Run Sentiment Agent — Phase 1 ───────────────────
+            sentiment_result = await run_sentiment_agent()
+            logger.info(
+                "Sentiment: F&G=%d(%s)  funding=%s  news=%s  combined=%+d  bias=%s",
+                sentiment_result.get("fear_greed_score", 50),
+                sentiment_result.get("fear_greed_label"),
+                sentiment_result.get("funding_signal"),
+                sentiment_result.get("news_sentiment"),
+                sentiment_result.get("combined_sentiment", 0),
+                sentiment_result.get("trade_bias_adjustment"),
+            )
+
+            # ── h) Save regime snapshot to DB ──────────────────────
+            try:
+                save_regime(db, {
+                    "timestamp": int(time.time()),
+                    "regime": regime_result.get("regime", "UNKNOWN"),
+                    "confidence": regime_result.get("confidence", 0),
+                    "strategy_bias": regime_result.get("strategy_bias", ""),
+                    "adx": market_data.get("adx") or 0,
+                    "confluence_score": mtf_result.get("confluence_score", 0),
+                    "sentiment_score": sentiment_result.get("combined_sentiment", 0),
+                    "fear_greed": sentiment_result.get("fear_greed_score", 50),
+                    "funding_signal": sentiment_result.get("funding_signal", "neutral"),
+                })
+            except Exception:
+                pass
+
+            # ── i) Orchestrator gate (enhanced with Phase 1 data) ──
+            orch_result = run_orchestrator(
+                market_data, portfolio,
+                regime_data=regime_result,
+                mtf_data=mtf_result,
+                sentiment_data=sentiment_result,
+            )
             logger.info(
                 "Orchestrator: analyze=%s  risk=%s  conf=%.2f  reason=%s",
                 orch_result.get("analyze"),
@@ -200,7 +293,7 @@ async def run_bot() -> None:
                 orch_result.get("reason"),
             )
 
-            # ── d) If orchestrator says no, save decision and sleep ───
+            # ── j) If orchestrator says no, save decision and sleep ──
             if not orch_result.get("analyze", False):
                 reason = orch_result.get("reason", "unknown")
                 logger.info(
@@ -237,11 +330,12 @@ async def run_bot() -> None:
                 if run_bot._blocked_count % 60 == 1:  # First block + every ~1 hour
                     try:
                         await send_telegram_alert(
-                            f"🤖 *BOT ALIVE* — Monitoring market\n"
+                            f"🤖 *BOT ALIVE (ELITE v1)* — Monitoring market\n"
                             f"Status: `HOLD` (blocked: {reason})\n"
                             f"BTC: `${close_p:,.2f}` | RSI: `{market_data.get('rsi', 0):.1f}`\n"
-                            f"Trend: `{market_data.get('trend', 'unknown')}` | "
-                            f"BB width: `${bb_w:.2f}`"
+                            f"Regime: `{regime_result.get('regime', 'N/A')}` | "
+                            f"MTF: `{mtf_result.get('confluence_score', 0):+d}` | "
+                            f"F&G: `{sentiment_result.get('fear_greed_score', 50)}`"
                         )
                     except Exception:
                         pass
@@ -249,7 +343,7 @@ async def run_bot() -> None:
                 await asyncio.sleep(60)
                 continue
 
-            # ── e) Run trend agent ──────────────────────────────────
+            # ── k) Run trend agent ─────────────────────────────────
             signal = run_trend_agent(market_data)
             logger.info(
                 "Trend signal: %s  confidence=%.2f  reason=%s",
@@ -258,7 +352,7 @@ async def run_bot() -> None:
                 signal.get("reason"),
             )
 
-            # ── f) Risk manager evaluation ──────────────────────────
+            # ── l) Risk manager evaluation ─────────────────────────
             risk_result = evaluate_trade(
                 signal, portfolio, market_data, _config_dict()
             )
@@ -269,7 +363,7 @@ async def run_bot() -> None:
                 risk_result.get("quantity"),
             )
 
-            # ── g) Execute if approved ──────────────────────────────
+            # ── m) Execute if approved ─────────────────────────────
             if risk_result.get("approved"):
                 side = signal["signal"].lower()  # "buy" or "sell"
                 qty = risk_result["quantity"]
@@ -307,7 +401,7 @@ async def run_bot() -> None:
 
                 # Send Telegram alert
                 alert_msg = (
-                    f"*TRADE EXECUTED*\n"
+                    f"*TRADE EXECUTED (ELITE v1)*\n"
                     f"Side: `{side.upper()}`\n"
                     f"Symbol: `{config.SYMBOL}`\n"
                     f"Qty: `{qty:.6f} BTC`\n"
@@ -315,7 +409,10 @@ async def run_bot() -> None:
                     f"SL: `${risk_result.get('stop_loss_price', 0):,.2f}`\n"
                     f"TP: `${risk_result.get('take_profit_price', 0):,.2f}`\n"
                     f"Confidence: `{signal.get('confidence', 0):.2f}`\n"
-                    f"Risk: `${risk_result.get('risk_dollars', 0):.2f}`"
+                    f"Risk: `${risk_result.get('risk_dollars', 0):.2f}`\n"
+                    f"Regime: `{regime_result.get('regime', 'N/A')}`\n"
+                    f"MTF Score: `{mtf_result.get('confluence_score', 0):+d}`\n"
+                    f"Sentiment: `{sentiment_result.get('combined_sentiment', 0):+d}`"
                 )
                 await send_telegram_alert(alert_msg)
 
@@ -342,19 +439,22 @@ async def run_bot() -> None:
                 }
                 save_decision(db, decision_record)
 
-            # ── h) Cycle summary ────────────────────────────────────
+            # ── n) Cycle summary ───────────────────────────────────
             elapsed = time.time() - cycle_start
             logger.info(
-                "Cycle done in %.1fs | signal=%s conf=%.2f | "
-                "approved=%s reason=%s | next in 300s",
+                "Cycle done in %.1fs | regime=%s | MTF=%+d | sentiment=%+d | "
+                "signal=%s conf=%.2f | approved=%s reason=%s | next in 300s",
                 elapsed,
+                regime_result.get("regime"),
+                mtf_result.get("confluence_score", 0),
+                sentiment_result.get("combined_sentiment", 0),
                 signal.get("signal"),
                 signal.get("confidence", 0),
                 risk_result.get("approved"),
                 risk_result.get("reason"),
             )
 
-            # ── i) Sleep 300s (5-minute candle rhythm) ──────────────
+            # ── o) Sleep 300s (5-minute candle rhythm) ─────────────
             last_error_str = None
             await asyncio.sleep(300)
 

@@ -52,6 +52,19 @@ CREATE TABLE IF NOT EXISTS agent_decisions (
     reason      TEXT    DEFAULT '',
     approved    INTEGER DEFAULT 0   -- 0 = pending, 1 = approved
 );
+
+CREATE TABLE IF NOT EXISTS regime_history (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp        INTEGER NOT NULL,
+    regime           TEXT    NOT NULL,
+    confidence       REAL    NOT NULL,
+    strategy_bias    TEXT    DEFAULT '',
+    adx              REAL    DEFAULT 0.0,
+    confluence_score INTEGER DEFAULT 0,
+    sentiment_score  INTEGER DEFAULT 0,
+    fear_greed       INTEGER DEFAULT 50,
+    funding_signal   TEXT    DEFAULT 'neutral'
+);
 """
 
 
@@ -156,3 +169,20 @@ def update_trade_status(
         (status, pnl, trade_id)
     )
     conn.commit()
+
+
+def save_regime(conn: sqlite3.Connection, regime_data: dict) -> None:
+    """Insert a regime classification snapshot into *regime_history*."""
+    conn.execute(
+        """
+        INSERT INTO regime_history
+            (timestamp, regime, confidence, strategy_bias, adx,
+             confluence_score, sentiment_score, fear_greed, funding_signal)
+        VALUES
+            (:timestamp, :regime, :confidence, :strategy_bias, :adx,
+             :confluence_score, :sentiment_score, :fear_greed, :funding_signal)
+        """,
+        regime_data,
+    )
+    conn.commit()
+

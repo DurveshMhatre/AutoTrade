@@ -55,6 +55,7 @@ EXPECTED_KEYS = {
     "close",
     "ema_20",
     "ema_50",
+    "ema_200",
     "rsi",
     "bb_upper",
     "bb_mid",
@@ -63,11 +64,13 @@ EXPECTED_KEYS = {
     "macd_signal",
     "macd_hist",
     "atr",
+    "adx",
     "volume",
     "volume_sma20",
     "trend",
     "volatility",
     "volume_surge",
+    "volume_trend",
 }
 
 

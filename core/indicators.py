@@ -72,6 +72,26 @@ def _detect_volume_surge(
     return volume > 1.5 * volume_sma20
 
 
+def _classify_volume_trend(volume_series: pd.Series, lookback: int = 5) -> str:
+    """Classify recent volume direction over *lookback* periods."""
+    if len(volume_series) < lookback:
+        return "neutral"
+    recent = volume_series.tail(lookback).dropna()
+    if len(recent) < 2:
+        return "neutral"
+    # Simple linear slope check
+    first_half = recent.iloc[: len(recent) // 2].mean()
+    second_half = recent.iloc[len(recent) // 2 :].mean()
+    if first_half == 0:
+        return "neutral"
+    change_pct = (second_half - first_half) / first_half
+    if change_pct > 0.15:
+        return "increasing"
+    elif change_pct < -0.15:
+        return "decreasing"
+    return "neutral"
+
+
 def compute_indicators(candles: list) -> dict:
     """Compute technical indicators from raw OHLCV candle data.
 
@@ -114,6 +134,16 @@ def compute_indicators(candles: list) -> dict:
     # Average True Range
     df["atr"] = ta.atr(df["high"], df["low"], df["close"], length=14)
 
+    # Average Directional Index (ADX) — measures trend strength
+    adx_df = ta.adx(df["high"], df["low"], df["close"], length=14)
+    if adx_df is not None and len(adx_df.columns) > 0:
+        df["adx"] = adx_df.iloc[:, 0]  # ADX value (0-100)
+    else:
+        df["adx"] = float("nan")
+
+    # EMA 200 — long-term trend anchor
+    df["ema_200"] = ta.ema(df["close"], length=200)
+
     # Volume SMA
     df["volume_sma20"] = ta.sma(df["volume"], length=20)
 
@@ -133,18 +163,23 @@ def compute_indicators(candles: list) -> dict:
     volume = _safe_round(latest["volume"])
     volume_sma20 = _safe_round(latest["volume_sma20"])
 
+    adx = _safe_round(latest.get("adx"))
+    ema_200 = _safe_round(latest.get("ema_200"))
+
     # --- derived fields --------------------------------------------------
     trend = _classify_trend(ema_20, ema_50)
     volatility = _classify_volatility(
         atr, df["atr"]
     )
     volume_surge = _detect_volume_surge(volume, volume_sma20)
+    volume_trend = _classify_volume_trend(df["volume"])
 
     return {
         "timestamp": latest["timestamp"],
         "close": _safe_round(latest["close"]),
         "ema_20": ema_20,
         "ema_50": ema_50,
+        "ema_200": ema_200,
         "rsi": rsi,
         "bb_upper": bb_upper,
         "bb_mid": bb_mid,
@@ -153,9 +188,82 @@ def compute_indicators(candles: list) -> dict:
         "macd_signal": macd_signal,
         "macd_hist": macd_hist,
         "atr": atr,
+        "adx": adx,
         "volume": volume,
         "volume_sma20": volume_sma20,
         "trend": trend,
         "volatility": volatility,
         "volume_surge": volume_surge,
+        "volume_trend": volume_trend,
+    }
+
+
+def compute_mtf_indicators(candles: list) -> dict:
+    """Compute a lighter set of indicators for higher-timeframe candles.
+
+    Used by the regime and MTF confluence agents to evaluate 1H, 4H, 1D data.
+
+    Parameters
+    ----------
+    candles : list[dict]
+        OHLCV candle dicts.
+
+    Returns
+    -------
+    dict
+        Indicator snapshot: EMAs, RSI, ADX, ATR, trend, structure.
+    """
+    if not candles or len(candles) < 50:
+        return {
+            "close": None, "ema_20": None, "ema_50": None, "ema_200": None,
+            "rsi": None, "adx": None, "atr": None, "macd_hist": None,
+            "trend": "neutral", "volume_trend": "neutral",
+        }
+
+    df = pd.DataFrame(candles)
+    for col in ("open", "high", "low", "close", "volume"):
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # Core EMAs
+    df["ema_20"] = ta.ema(df["close"], length=20)
+    df["ema_50"] = ta.ema(df["close"], length=50)
+    df["ema_200"] = ta.ema(df["close"], length=200) if len(df) >= 200 else None
+
+    # Momentum
+    df["rsi"] = ta.rsi(df["close"], length=14)
+
+    # MACD for momentum confirmation
+    macd = ta.macd(df["close"], fast=12, slow=26, signal=9)
+    if macd is not None and len(macd.columns) >= 2:
+        df["macd_hist"] = macd.iloc[:, 1]
+    else:
+        df["macd_hist"] = float("nan")
+
+    # Trend strength
+    adx_df = ta.adx(df["high"], df["low"], df["close"], length=14)
+    if adx_df is not None and len(adx_df.columns) > 0:
+        df["adx"] = adx_df.iloc[:, 0]
+    else:
+        df["adx"] = float("nan")
+
+    # Volatility
+    df["atr"] = ta.atr(df["high"], df["low"], df["close"], length=14)
+
+    latest = df.iloc[-1]
+
+    ema_20 = _safe_round(latest.get("ema_20"))
+    ema_50 = _safe_round(latest.get("ema_50"))
+    ema_200 = _safe_round(latest.get("ema_200")) if "ema_200" in latest.index else None
+
+    return {
+        "close": _safe_round(latest["close"]),
+        "ema_20": ema_20,
+        "ema_50": ema_50,
+        "ema_200": ema_200,
+        "rsi": _safe_round(latest.get("rsi")),
+        "adx": _safe_round(latest.get("adx")),
+        "atr": _safe_round(latest.get("atr")),
+        "macd_hist": _safe_round(latest.get("macd_hist")),
+        "trend": _classify_trend(ema_20, ema_50),
+        "volume_trend": _classify_volume_trend(df["volume"]),
     }

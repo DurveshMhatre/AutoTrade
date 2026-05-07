@@ -5,6 +5,11 @@ Supports TWO modes (controlled by config.USE_AI_AGENTS):
   • LOCAL mode (default, FREE): Deterministic rule-based evaluation.
   • AI mode: Calls Claude API for market evaluation.
 
+Enhanced in Phase 1 to incorporate:
+  • Regime Agent veto (CHOP / DISTRIBUTION → block)
+  • MTF Confluence veto (conflicting timeframes → block)
+  • Sentiment Agent bias (strong negative → block)
+
 Never crashes — returns a safe default on any failure.
 """
 
@@ -91,15 +96,95 @@ _SQUEEZE_BYPASS_EVERY = 5  # Allow analysis every 5th blocked cycle
 
 
 # ---------------------------------------------------------------------------
+# Phase 1 VETO checks — regime, MTF, sentiment
+# ---------------------------------------------------------------------------
+def _check_phase1_vetos(
+    regime_data: dict | None,
+    mtf_data: dict | None,
+    sentiment_data: dict | None,
+) -> dict | None:
+    """Check Phase 1 intelligence agents for veto conditions.
+
+    Returns a rejection dict if any veto fires, or None if all clear.
+    """
+    # ── Regime veto ─────────────────────────────────────────────────
+    if regime_data:
+        regime = regime_data.get("regime", "")
+        if regime in ("CHOP", "DISTRIBUTION"):
+            return {
+                "analyze": False,
+                "reason": f"regime_veto_{regime.lower()}",
+                "risk_level": "high",
+                "confidence": 0.1,
+            }
+        if regime == "STRONG_TREND_DOWN":
+            return {
+                "analyze": False,
+                "reason": "regime_veto_strong_downtrend",
+                "risk_level": "high",
+                "confidence": 0.1,
+            }
+        if regime == "CAPITULATION":
+            return {
+                "analyze": False,
+                "reason": "regime_veto_capitulation",
+                "risk_level": "high",
+                "confidence": 0.15,
+            }
+
+    # ── MTF veto ─────────────────────────────────────────────────────
+    if mtf_data:
+        if not mtf_data.get("trade_approved", False):
+            blocking = mtf_data.get("blocking_reason", "timeframes_not_aligned")
+            score = mtf_data.get("confluence_score", 0)
+            return {
+                "analyze": False,
+                "reason": f"mtf_veto_score_{score}_{blocking[:40]}",
+                "risk_level": "medium",
+                "confidence": 0.2,
+            }
+
+    # ── Sentiment veto ───────────────────────────────────────────────
+    if sentiment_data:
+        bias_adj = sentiment_data.get("trade_bias_adjustment", "neutral")
+        combined = sentiment_data.get("combined_sentiment", 0)
+        if bias_adj == "flat":
+            return {
+                "analyze": False,
+                "reason": f"sentiment_veto_flat_score_{combined}",
+                "risk_level": "high",
+                "confidence": 0.1,
+            }
+
+    return None  # No veto — all clear
+
+
+# ---------------------------------------------------------------------------
 # LOCAL rule-based orchestrator (FREE — no API calls)
 # ---------------------------------------------------------------------------
-def _local_orchestrator(market_data: dict, portfolio: dict) -> dict:
+def _local_orchestrator(
+    market_data: dict,
+    portfolio: dict,
+    regime_data: dict | None = None,
+    mtf_data: dict | None = None,
+    sentiment_data: dict | None = None,
+) -> dict:
     """Evaluate market conditions using the exact same rules from the
     system prompt, implemented as deterministic Python logic.
 
+    Enhanced with Phase 1 intelligence veto checks.
     This is 100% FREE — no API calls needed.
     """
     global _squeeze_block_count
+
+    # ── Phase 1 veto checks (if data provided) ─────────────────────
+    veto = _check_phase1_vetos(regime_data, mtf_data, sentiment_data)
+    if veto:
+        logger.info(
+            "Orchestrator: Phase 1 veto fired — reason=%s",
+            veto["reason"],
+        )
+        return veto
 
     rsi = market_data.get("rsi") or 50.0
     trend = market_data.get("trend", "neutral")
@@ -200,7 +285,7 @@ def _local_orchestrator(market_data: dict, portfolio: dict) -> dict:
     else:
         risk_level = "high"
 
-    # Confidence scoring
+    # Confidence scoring (base)
     confidence = 0.6
     if risk_level == "low":
         confidence += 0.2
@@ -210,7 +295,33 @@ def _local_orchestrator(market_data: dict, portfolio: dict) -> dict:
         confidence += 0.1  # RSI in sweet spot
     if volatility == "normal":
         confidence += 0.05
-    confidence = round(min(1.0, confidence), 4)
+
+    # ── Phase 1 confidence boosts ──────────────────────────────────
+    if regime_data:
+        regime = regime_data.get("regime", "")
+        if regime in ("STRONG_TREND_UP", "WEAK_TREND_UP"):
+            confidence += 0.05  # Favorable regime
+        regime_conf = regime_data.get("confidence", 0.0)
+        if regime_conf > 0.8:
+            confidence += 0.05  # High regime confidence
+
+    if mtf_data:
+        score = mtf_data.get("confluence_score", 0)
+        if score >= 3:
+            confidence += 0.10  # Strong MTF alignment
+        elif score >= 2:
+            confidence += 0.05
+        if mtf_data.get("entry_timeframe_ready", False):
+            confidence += 0.05
+
+    if sentiment_data:
+        bias_adj = sentiment_data.get("trade_bias_adjustment", "neutral")
+        if bias_adj == "boost":
+            confidence += 0.05
+        elif bias_adj == "reduce":
+            confidence -= 0.10
+
+    confidence = round(max(0.0, min(1.0, confidence)), 4)
 
     reason = f"{trend}_trend_clear_rsi_{rsi:.0f}"
 
@@ -230,21 +341,42 @@ def _local_orchestrator(market_data: dict, portfolio: dict) -> dict:
 # ---------------------------------------------------------------------------
 # AI-powered orchestrator (requires Claude API key)
 # ---------------------------------------------------------------------------
-def _ai_orchestrator(market_data: dict, portfolio: dict) -> dict:
+def _ai_orchestrator(
+    market_data: dict,
+    portfolio: dict,
+    regime_data: dict | None = None,
+    mtf_data: dict | None = None,
+    sentiment_data: dict | None = None,
+) -> dict:
     """Call Claude API for market evaluation. Requires ANTHROPIC_API_KEY."""
     try:
         import anthropic  # lazy import — only loaded when AI mode is on
 
+        # Phase 1 veto checks still run before AI call (save API cost)
+        veto = _check_phase1_vetos(regime_data, mtf_data, sentiment_data)
+        if veto:
+            logger.info(
+                "Orchestrator: Phase 1 veto fired (pre-AI) — reason=%s",
+                veto["reason"],
+            )
+            return veto
+
         user_prompt = (
             f"Market snapshot: {json.dumps(market_data, indent=2)}\n"
-            f"Portfolio state: {json.dumps(portfolio, indent=2)}\n\n"
-            f"Decide now."
+            f"Portfolio state: {json.dumps(portfolio, indent=2)}\n"
         )
+        if regime_data:
+            user_prompt += f"Regime: {json.dumps(regime_data, indent=2)}\n"
+        if mtf_data:
+            user_prompt += f"MTF Confluence: {json.dumps(mtf_data, indent=2)}\n"
+        if sentiment_data:
+            user_prompt += f"Sentiment: {json.dumps(sentiment_data, indent=2)}\n"
+        user_prompt += "\nDecide now."
 
         api_key = os.getenv("ANTHROPIC_API_KEY")
         if not api_key:
             logger.error("ANTHROPIC_API_KEY is not set — falling back to local mode")
-            return _local_orchestrator(market_data, portfolio)
+            return _local_orchestrator(market_data, portfolio, regime_data, mtf_data, sentiment_data)
 
         client = anthropic.Anthropic(api_key=api_key)
 
@@ -271,21 +403,40 @@ def _ai_orchestrator(market_data: dict, portfolio: dict) -> dict:
 
     except json.JSONDecodeError as exc:
         logger.error("Orchestrator JSON parse error: %s — falling back to local", exc)
-        return _local_orchestrator(market_data, portfolio)
+        return _local_orchestrator(market_data, portfolio, regime_data, mtf_data, sentiment_data)
 
     except Exception as exc:  # noqa: BLE001
         logger.error("Orchestrator API error: %s — falling back to local", exc)
-        return _local_orchestrator(market_data, portfolio)
+        return _local_orchestrator(market_data, portfolio, regime_data, mtf_data, sentiment_data)
 
 
 # ---------------------------------------------------------------------------
 # Public entry point — auto-selects local or AI mode
 # ---------------------------------------------------------------------------
-def run_orchestrator(market_data: dict, portfolio: dict) -> dict:
+def run_orchestrator(
+    market_data: dict,
+    portfolio: dict,
+    regime_data: dict | None = None,
+    mtf_data: dict | None = None,
+    sentiment_data: dict | None = None,
+) -> dict:
     """Decide whether the system should analyze for a trade right now.
 
     Automatically uses local rules (FREE) or Claude API based on
     ``config.USE_AI_AGENTS``.  Falls back to local on any AI failure.
+
+    Parameters
+    ----------
+    market_data : dict
+        Latest 5M indicator snapshot.
+    portfolio : dict
+        Current portfolio state.
+    regime_data : dict | None
+        Output from regime agent (Phase 1).
+    mtf_data : dict | None
+        Output from MTF confluence agent (Phase 1).
+    sentiment_data : dict | None
+        Output from sentiment agent (Phase 1).
 
     Returns
     -------
@@ -300,6 +451,6 @@ def run_orchestrator(market_data: dict, portfolio: dict) -> dict:
         use_ai = False
 
     if use_ai:
-        return _ai_orchestrator(market_data, portfolio)
+        return _ai_orchestrator(market_data, portfolio, regime_data, mtf_data, sentiment_data)
     else:
-        return _local_orchestrator(market_data, portfolio)
+        return _local_orchestrator(market_data, portfolio, regime_data, mtf_data, sentiment_data)
