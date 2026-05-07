@@ -65,6 +65,19 @@ CREATE TABLE IF NOT EXISTS regime_history (
     fear_greed       INTEGER DEFAULT 50,
     funding_signal   TEXT    DEFAULT 'neutral'
 );
+
+CREATE TABLE IF NOT EXISTS autopsies (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp           INTEGER NOT NULL,
+    trade_id            INTEGER NOT NULL,
+    entry_grade         TEXT    NOT NULL,
+    exit_quality        TEXT    NOT NULL,
+    root_cause          TEXT    DEFAULT NULL,
+    lesson              TEXT    NOT NULL,
+    pattern_detected    INTEGER DEFAULT 0,
+    pattern_description TEXT    DEFAULT NULL,
+    FOREIGN KEY(trade_id) REFERENCES trades(id)
+);
 """
 
 
@@ -163,10 +176,19 @@ def update_trade_status(
     conn.execute(
         """
         UPDATE trades 
-        SET status = ?, pnl = ? 
+        SET status = ?, pnl = pnl + ? 
         WHERE id = ?
         """,
         (status, pnl, trade_id)
+    )
+    conn.commit()
+
+
+def update_trade_quantity(conn: sqlite3.Connection, trade_id: int, new_quantity: float) -> None:
+    """Update the remaining quantity of an open trade after a partial close."""
+    conn.execute(
+        "UPDATE trades SET quantity = ? WHERE id = ?",
+        (new_quantity, trade_id)
     )
     conn.commit()
 
@@ -185,4 +207,35 @@ def save_regime(conn: sqlite3.Connection, regime_data: dict) -> None:
         regime_data,
     )
     conn.commit()
+
+
+def save_autopsy(conn: sqlite3.Connection, autopsy_data: dict) -> None:
+    """Insert a post-trade autopsy into the *autopsies* table."""
+    conn.execute(
+        """
+        INSERT INTO autopsies 
+            (timestamp, trade_id, entry_grade, exit_quality, root_cause, 
+             lesson, pattern_detected, pattern_description)
+        VALUES 
+            (:timestamp, :trade_id, :entry_grade, :exit_quality, :root_cause, 
+             :lesson, :pattern_detected, :pattern_description)
+        """,
+        autopsy_data
+    )
+    conn.commit()
+
+
+def get_recent_autopsies(conn: sqlite3.Connection, limit: int = 50) -> list[dict]:
+    """Return the most recent autopsies."""
+    cursor = conn.execute(
+        "SELECT * FROM autopsies ORDER BY id DESC LIMIT ?",
+        (limit,)
+    )
+    return [dict(row) for row in cursor.fetchall()]
+
+def get_trade_by_id(conn: sqlite3.Connection, trade_id: int) -> dict | None:
+    """Fetch a single trade by ID."""
+    cursor = conn.execute("SELECT * FROM trades WHERE id = ?", (trade_id,))
+    row = cursor.fetchone()
+    return dict(row) if row else None
 

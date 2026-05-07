@@ -204,6 +204,37 @@ async def fetch_multi_timeframe(
     return result
 
 
+# ─── 1c. Order Book (Depth) ────────────────────────────────────────
+
+async def fetch_order_book(symbol: str = "BTC/USDT", limit: int = 50) -> dict:
+    """Fetch the order book depth from Binance.
+
+    Parameters
+    ----------
+    symbol : str
+        Trading pair.
+    limit : int
+        Number of bids and asks to fetch.
+
+    Returns
+    -------
+    dict
+        ``{"bids": [[price, amount], ...], "asks": [[price, amount], ...]}``
+    """
+    exchange = _build_exchange()
+    try:
+        order_book = await exchange.fetch_order_book(symbol, limit=limit)
+        return {
+            "bids": order_book.get("bids", []),
+            "asks": order_book.get("asks", []),
+        }
+    except Exception as exc:
+        _log(f"fetch_order_book failed: {exc}")
+        return {"bids": [], "asks": []}
+    finally:
+        await _close_exchange(exchange)
+
+
 # ─── 2. Current ticker price ────────────────────────────────────────
 
 async def get_current_price(symbol: str = "BTC/USDT") -> float:

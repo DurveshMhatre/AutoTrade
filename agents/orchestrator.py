@@ -27,38 +27,60 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # System prompt (used only in AI mode)
 # ---------------------------------------------------------------------------
-ORCHESTRATOR_SYSTEM_PROMPT = """You are the risk-aware orchestrator of an automated crypto trading system trading BTC/USDT on Binance.
+ORCHESTRATOR_SYSTEM_PROMPT = """You are the chief trading officer of an automated crypto fund with 10+ years of experience. You synthesize all available intelligence to make the final trade decision.
 
-Your ONLY job is to decide if market conditions are currently suitable for the trend-following strategy to analyze for a trade. You are NOT deciding whether to buy or sell — that is the trend agent's job.
+You receive outputs from 7 specialized agents:
+1. Regime Agent: what market mode are we in?
+2. MTF Confluence Agent: do all timeframes agree?
+3. Trend Signal Agent: EMA/RSI/MACD signal
+4. S&R Level Agent: entry quality near key levels?
+5. Volume/Order Flow Agent: institutional footprint?
+6. On-Chain/Sentiment Agent: whale activity + fear/greed
+7. News Agent: major catalyst or headwind?
 
-DECISION CRITERIA — only set analyze=true if ALL of the following are met:
-1. Market is not in extreme volatility (ATR is not "high" AND RSI is not above 80 or below 20)
-2. There is clear directional bias (trend is "bullish" or "bearish", not "neutral")
-3. We are not near a Bollinger Band squeeze (bb_upper - bb_lower > 0.5% of close price)
-4. Portfolio has capacity (open_positions < max_positions)
-5. We have not hit the daily loss limit (daily_loss_pct < 0.05)
+DECISION FRAMEWORK (how an experienced trader weighs these):
 
-RISK LEVELS:
-- low: RSI 35–65, trend clear, volatility normal
-- medium: RSI 30–35 or 65–70, or volatility high
-- high: RSI < 30 or > 70, extreme volatility, or conflicting signals
+VETO CONDITIONS — any single one blocks the trade entirely:
+- Regime = CHOP or DISTRIBUTION: NO TRADE
+- MTF confluence score = 0 or negative: NO TRADE
+- News agent detects major_event with negative sentiment: NO TRADE
 
-Always respond with ONLY valid JSON. No explanation outside the JSON."""
+CONVICTION SCORING (0 to 100):
+Base: 50
++20 if regime is STRONG_TREND (direction matches signal)
++15 if all 3 timeframes aligned (MTF score >= 3)
++10 if entry near strong S/R (entry_quality = "excellent")
++10 if order flow confirms (bid_ask_ratio > 1.4 for buy)
++5  if on-chain sentiment positive (combined_sentiment > 3)
++5  if news tailwind (news action = "boost")
+-15 if entering against higher timeframe
+-10 if low volume breakout flagged
+-5  if news neutral-negative
+
+POSITION SIZE TIER:
+- Conviction 80-100: full
+- Conviction 60-79: 75%
+- Conviction 40-59: 50%
+- Below 40: NO TRADE (not enough edge)
+
+Respond ONLY in JSON:
+{"trade_approved": bool, "conviction_score": int, "veto_reason": "string or null", "final_signal": "BUY|SELL|FLAT", "position_size_tier": "full|75|50", "summary": "max 30 words of reasoning"}"""
 
 # ---------------------------------------------------------------------------
 # Safe default returned on any failure
 # ---------------------------------------------------------------------------
 SAFE_DEFAULT: dict = {
-    "analyze": False,
-    "reason": "parse_error",
-    "risk_level": "high",
-    "confidence": 0.0,
+    "trade_approved": False,
+    "conviction_score": 0,
+    "veto_reason": "parse_error",
+    "final_signal": "FLAT",
+    "position_size_tier": "50",
+    "summary": "Agent encountered an error.",
 }
 
 # ---------------------------------------------------------------------------
 # Response validation helpers (AI mode)
 # ---------------------------------------------------------------------------
-VALID_RISK_LEVELS = {"low", "medium", "high"}
 
 
 def _extract_json(text: str) -> dict:
@@ -74,16 +96,12 @@ def _extract_json(text: str) -> dict:
 def _validate(decision: dict) -> dict:
     """Ensure the response conforms to the expected schema."""
     validated: dict = {}
-    validated["analyze"] = bool(decision.get("analyze", False))
-    reason = decision.get("reason", "")
-    validated["reason"] = str(reason) if reason else "no_reason_given"
-    risk = decision.get("risk_level", "high")
-    validated["risk_level"] = risk if risk in VALID_RISK_LEVELS else "high"
-    try:
-        conf = float(decision.get("confidence", 0.0))
-        validated["confidence"] = round(max(0.0, min(1.0, conf)), 4)
-    except (TypeError, ValueError):
-        validated["confidence"] = 0.0
+    validated["trade_approved"] = bool(decision.get("trade_approved", False))
+    validated["conviction_score"] = int(decision.get("conviction_score", 0))
+    validated["veto_reason"] = decision.get("veto_reason")
+    validated["final_signal"] = decision.get("final_signal", "FLAT")
+    validated["position_size_tier"] = str(decision.get("position_size_tier", "50"))
+    validated["summary"] = decision.get("summary", "")[:200]
     return validated
 
 
@@ -96,40 +114,47 @@ _SQUEEZE_BYPASS_EVERY = 5  # Allow analysis every 5th blocked cycle
 
 
 # ---------------------------------------------------------------------------
-# Phase 1 VETO checks — regime, MTF, sentiment
+# Phase 1 & 2 VETO checks
 # ---------------------------------------------------------------------------
-def _check_phase1_vetos(
-    regime_data: dict | None,
-    mtf_data: dict | None,
-    sentiment_data: dict | None,
+def _check_vetoes(
+    regime_data: dict | None = None,
+    mtf_data: dict | None = None,
+    sentiment_data: dict | None = None,
+    news_data: dict | None = None,
 ) -> dict | None:
-    """Check Phase 1 intelligence agents for veto conditions.
-
-    Returns a rejection dict if any veto fires, or None if all clear.
+    """Run all veto checks from the intelligence layer.
+    If ANY check fails, return an early rejection payload.
+    If ALL pass, return None.
     """
     # ── Regime veto ─────────────────────────────────────────────────
     if regime_data:
         regime = regime_data.get("regime", "")
         if regime in ("CHOP", "DISTRIBUTION"):
             return {
-                "analyze": False,
-                "reason": f"regime_veto_{regime.lower()}",
-                "risk_level": "high",
-                "confidence": 0.1,
+                "trade_approved": False,
+                "conviction_score": 0,
+                "veto_reason": f"regime_veto_{regime.lower()}",
+                "final_signal": "FLAT",
+                "position_size_tier": "50",
+                "summary": f"Trade vetoed: regime is {regime}."
             }
         if regime == "STRONG_TREND_DOWN":
             return {
-                "analyze": False,
-                "reason": "regime_veto_strong_downtrend",
-                "risk_level": "high",
-                "confidence": 0.1,
+                "trade_approved": False,
+                "conviction_score": 0,
+                "veto_reason": "regime_veto_strong_downtrend",
+                "final_signal": "FLAT",
+                "position_size_tier": "50",
+                "summary": "Trade vetoed: strong downtrend."
             }
         if regime == "CAPITULATION":
             return {
-                "analyze": False,
-                "reason": "regime_veto_capitulation",
-                "risk_level": "high",
-                "confidence": 0.15,
+                "trade_approved": False,
+                "conviction_score": 0,
+                "veto_reason": "regime_veto_capitulation",
+                "final_signal": "FLAT",
+                "position_size_tier": "50",
+                "summary": "Trade vetoed: capitulation detected."
             }
 
     # ── MTF veto ─────────────────────────────────────────────────────
@@ -138,10 +163,12 @@ def _check_phase1_vetos(
             blocking = mtf_data.get("blocking_reason", "timeframes_not_aligned")
             score = mtf_data.get("confluence_score", 0)
             return {
-                "analyze": False,
-                "reason": f"mtf_veto_score_{score}_{blocking[:40]}",
-                "risk_level": "medium",
-                "confidence": 0.2,
+                "trade_approved": False,
+                "conviction_score": 0,
+                "veto_reason": f"mtf_veto_score_{score}_{blocking[:40]}",
+                "final_signal": "FLAT",
+                "position_size_tier": "50",
+                "summary": f"Trade vetoed: MTF score {score}."
             }
 
     # ── Sentiment veto ───────────────────────────────────────────────
@@ -150,10 +177,24 @@ def _check_phase1_vetos(
         combined = sentiment_data.get("combined_sentiment", 0)
         if bias_adj == "flat":
             return {
-                "analyze": False,
-                "reason": f"sentiment_veto_flat_score_{combined}",
-                "risk_level": "high",
-                "confidence": 0.1,
+                "trade_approved": False,
+                "conviction_score": 0,
+                "veto_reason": f"sentiment_veto_flat_score_{combined}",
+                "final_signal": "FLAT",
+                "position_size_tier": "50",
+                "summary": f"Trade vetoed: sentiment flat ({combined})."
+            }
+
+    # ── News veto ────────────────────────────────────────────────────
+    if news_data:
+        if news_data.get("trading_action") == "pause" or news_data.get("major_event_detected"):
+            return {
+                "trade_approved": False,
+                "conviction_score": 0,
+                "veto_reason": f"news_veto_major_event_{news_data.get('sentiment_label', '')}",
+                "final_signal": "FLAT",
+                "position_size_tier": "50",
+                "summary": "Trade vetoed due to major news event."
             }
 
     return None  # No veto — all clear
@@ -165,20 +206,25 @@ def _check_phase1_vetos(
 def _local_orchestrator(
     market_data: dict,
     portfolio: dict,
+    trend_data: dict | None = None,
     regime_data: dict | None = None,
     mtf_data: dict | None = None,
     sentiment_data: dict | None = None,
+    sr_data: dict | None = None,
+    order_flow_data: dict | None = None,
+    news_data: dict | None = None,
+    active_strategy: dict | None = None,
 ) -> dict:
     """Evaluate market conditions using the exact same rules from the
     system prompt, implemented as deterministic Python logic.
 
-    Enhanced with Phase 1 intelligence veto checks.
+    Enhanced with Phase 1 & 2 intelligence veto checks and confidence scoring.
     This is 100% FREE — no API calls needed.
     """
     global _squeeze_block_count
 
-    # ── Phase 1 veto checks (if data provided) ─────────────────────
-    veto = _check_phase1_vetos(regime_data, mtf_data, sentiment_data)
+    # ── Phase 1 & 2 veto checks (if data provided) ─────────────────────
+    veto = _check_vetoes(regime_data, mtf_data, sentiment_data, news_data)
     if veto:
         logger.info(
             "Orchestrator: Phase 1 veto fired — reason=%s",
@@ -186,155 +232,94 @@ def _local_orchestrator(
         )
         return veto
 
-    rsi = market_data.get("rsi") or 50.0
-    trend = market_data.get("trend", "neutral")
-    volatility = market_data.get("volatility", "normal")
-    close = market_data.get("close") or 0.0
-    bb_upper = market_data.get("bb_upper") or 0.0
-    bb_lower = market_data.get("bb_lower") or 0.0
-    open_positions = portfolio.get("open_positions", 0)
-    max_positions = portfolio.get("max_positions", 3)
-    daily_loss_pct = portfolio.get("daily_loss_pct", 0.0)
-
-    # ── Check all 5 conditions ─────────────────────────────────────
-
-    # 1. Not extreme volatility (ATR not high AND RSI not extreme)
-    extreme_volatility = volatility == "high" and (rsi > 80 or rsi < 20)
-    if extreme_volatility:
+    trend = trend_data.get("signal", "FLAT") if trend_data else market_data.get("trend", "FLAT").upper()
+    if trend not in ("BUY", "SELL"):
         return {
-            "analyze": False,
-            "reason": "extreme_volatility_with_extreme_rsi",
-            "risk_level": "high",
-            "confidence": 0.1,
+            "trade_approved": False,
+            "conviction_score": 0,
+            "veto_reason": "no_clear_trend_signal",
+            "final_signal": "FLAT",
+            "position_size_tier": "50",
+            "summary": "No directional trend signal to trade."
         }
+        
+    conviction = 50
 
-    # RSI extremes alone block
-    if rsi > 80 or rsi < 20:
-        return {
-            "analyze": False,
-            "reason": f"rsi_extreme_{rsi:.1f}",
-            "risk_level": "high",
-            "confidence": 0.15,
-        }
-
-    # 2. Clear directional bias
-    if trend == "neutral":
-        return {
-            "analyze": False,
-            "reason": "no_clear_trend",
-            "risk_level": "medium",
-            "confidence": 0.2,
-        }
-
-    # 3. Not in a Bollinger Band squeeze
-    #    Threshold lowered from 0.5% to 0.2% — BTC at $70k+ means
-    #    the old 0.5% ($385 width) was too aggressive for modern
-    #    low-volatility BTC regimes. 0.2% ($154 width) is more
-    #    realistic and still filters truly flat markets.
-    if close > 0:
-        bb_width_pct = (bb_upper - bb_lower) / close if close else 0
-        logger.debug(
-            "BB width: $%.2f (%.3f%% of close) | threshold: 0.200%%",
-            bb_upper - bb_lower, bb_width_pct * 100,
-        )
-        if bb_width_pct < 0.002:  # < 0.2% of close
-            _squeeze_block_count += 1
-            # Allow analysis every Nth squeeze block so the bot
-            # doesn't sit idle for hours in consolidation markets
-            if _squeeze_block_count % _SQUEEZE_BYPASS_EVERY == 0:
-                logger.info(
-                    "Bollinger squeeze detected BUT bypassing (cycle %d) — "
-                    "allowing analysis to prevent permanent stall",
-                    _squeeze_block_count,
-                )
-            else:
-                return {
-                    "analyze": False,
-                    "reason": "bollinger_squeeze",
-                    "risk_level": "medium",
-                    "confidence": 0.25,
-                }
-        else:
-            _squeeze_block_count = 0  # Reset when squeeze ends
-
-    # 4. Portfolio capacity
-    if open_positions >= max_positions:
-        return {
-            "analyze": False,
-            "reason": "max_positions_reached",
-            "risk_level": "low",
-            "confidence": 0.3,
-        }
-
-    # 5. Daily loss limit
-    if daily_loss_pct >= 0.05:
-        return {
-            "analyze": False,
-            "reason": "daily_loss_limit_hit",
-            "risk_level": "high",
-            "confidence": 0.1,
-        }
-
-    # ── All conditions passed — determine risk level ───────────────
-
-    # Risk level classification
-    if 35 <= rsi <= 65 and trend in ("bullish", "bearish") and volatility == "normal":
-        risk_level = "low"
-    elif (30 <= rsi < 35 or 65 < rsi <= 70) or volatility == "high":
-        risk_level = "medium"
-    else:
-        risk_level = "high"
-
-    # Confidence scoring (base)
-    confidence = 0.6
-    if risk_level == "low":
-        confidence += 0.2
-    elif risk_level == "medium":
-        confidence += 0.1
-    if 45 <= rsi <= 55:
-        confidence += 0.1  # RSI in sweet spot
-    if volatility == "normal":
-        confidence += 0.05
-
-    # ── Phase 1 confidence boosts ──────────────────────────────────
+    # ── Conviction boosts/penalties ──────────────────
     if regime_data:
-        regime = regime_data.get("regime", "")
-        if regime in ("STRONG_TREND_UP", "WEAK_TREND_UP"):
-            confidence += 0.05  # Favorable regime
-        regime_conf = regime_data.get("confidence", 0.0)
-        if regime_conf > 0.8:
-            confidence += 0.05  # High regime confidence
+        regime = regime_data.get("regime")
+        if regime == "STRONG_TREND_UP" and trend == "BUY":
+            conviction += 20
+        elif regime == "STRONG_TREND_DOWN" and trend == "SELL":
+            conviction += 20
+        elif regime == "WEAK_TREND_UP" and trend == "BUY":
+            conviction += 10
 
     if mtf_data:
         score = mtf_data.get("confluence_score", 0)
         if score >= 3:
-            confidence += 0.10  # Strong MTF alignment
-        elif score >= 2:
-            confidence += 0.05
-        if mtf_data.get("entry_timeframe_ready", False):
-            confidence += 0.05
+            conviction += 15
+        elif score >= 1:
+            conviction += 5
+        elif score < 0:
+            conviction -= 15 # Trading against higher timeframe
 
+    if sr_data:
+        entry_qual = sr_data.get("entry_quality")
+        if entry_qual == "excellent":
+            conviction += 10
+        elif entry_qual == "poor":
+            conviction -= 10
+            
+    if order_flow_data:
+        ratio = order_flow_data.get("bid_ask_ratio", 1.0)
+        if trend == "BUY" and ratio > 1.4:
+            conviction += 10
+        elif trend == "SELL" and ratio < 0.7:
+            conviction += 10
+            
     if sentiment_data:
-        bias_adj = sentiment_data.get("trade_bias_adjustment", "neutral")
-        if bias_adj == "boost":
-            confidence += 0.05
-        elif bias_adj == "reduce":
-            confidence -= 0.10
+        comb = sentiment_data.get("combined_sentiment", 0)
+        if comb > 3 and trend == "BUY":
+            conviction += 5
+        elif comb < -3 and trend == "SELL":
+            conviction += 5
+            
+    if news_data:
+        trading_action = news_data.get("trading_action")
+        if trading_action == "boost":
+            conviction += 5
+        elif trading_action == "reduce":
+            conviction -= 5
 
-    confidence = round(max(0.0, min(1.0, confidence)), 4)
+    conviction = max(0, min(100, int(conviction)))
 
-    reason = f"{trend}_trend_clear_rsi_{rsi:.0f}"
+    if conviction >= 80:
+        tier = "full"
+    elif conviction >= 60:
+        tier = "75"
+    elif conviction >= 40:
+        tier = "50"
+    else:
+        return {
+            "trade_approved": False,
+            "conviction_score": conviction,
+            "veto_reason": "low_conviction",
+            "final_signal": "FLAT",
+            "position_size_tier": "50",
+            "summary": f"Conviction too low ({conviction})."
+        }
 
-    logger.info(
-        "Local orchestrator: analyze=True, risk=%s, conf=%.2f, reason=%s",
-        risk_level, confidence, reason,
-    )
+    summary = f"Approved {trend} with {conviction} conviction."
+    logger.info(summary)
 
     return {
-        "analyze": True,
-        "reason": reason,
-        "risk_level": risk_level,
-        "confidence": confidence,
+        "trade_approved": True,
+        "conviction_score": conviction,
+        "veto_reason": None,
+        "final_signal": trend,
+        "position_size_tier": tier,
+        "summary": summary,
     }
 
 
@@ -344,39 +329,55 @@ def _local_orchestrator(
 def _ai_orchestrator(
     market_data: dict,
     portfolio: dict,
+    trend_data: dict | None = None,
     regime_data: dict | None = None,
     mtf_data: dict | None = None,
     sentiment_data: dict | None = None,
+    sr_data: dict | None = None,
+    order_flow_data: dict | None = None,
+    news_data: dict | None = None,
+    active_strategy: dict | None = None,
 ) -> dict:
-    """Call Claude API for market evaluation. Requires ANTHROPIC_API_KEY."""
+    """Evaluate market conditions using Claude 3 Haiku."""
     try:
-        import anthropic  # lazy import — only loaded when AI mode is on
+        import anthropic
 
-        # Phase 1 veto checks still run before AI call (save API cost)
-        veto = _check_phase1_vetos(regime_data, mtf_data, sentiment_data)
+        # ── Phase 1 & 2 veto checks (if data provided) ─────────────────────
+        veto = _check_vetoes(regime_data, mtf_data, sentiment_data, news_data)
         if veto:
-            logger.info(
-                "Orchestrator: Phase 1 veto fired (pre-AI) — reason=%s",
-                veto["reason"],
-            )
             return veto
 
-        user_prompt = (
-            f"Market snapshot: {json.dumps(market_data, indent=2)}\n"
-            f"Portfolio state: {json.dumps(portfolio, indent=2)}\n"
-        )
+        payload = {
+            "market_data": market_data,
+            "portfolio": portfolio,
+            "active_strategy": active_strategy or {},
+        }
+        
+        # Add phase 1 intel
         if regime_data:
-            user_prompt += f"Regime: {json.dumps(regime_data, indent=2)}\n"
+            payload["regime_intelligence"] = regime_data
         if mtf_data:
-            user_prompt += f"MTF Confluence: {json.dumps(mtf_data, indent=2)}\n"
+            payload["mtf_intelligence"] = mtf_data
         if sentiment_data:
-            user_prompt += f"Sentiment: {json.dumps(sentiment_data, indent=2)}\n"
-        user_prompt += "\nDecide now."
+            payload["sentiment_intelligence"] = sentiment_data
+            
+        # Add phase 2 intel
+        if sr_data:
+            payload["sr_intelligence"] = sr_data
+        if order_flow_data:
+            payload["order_flow_intelligence"] = order_flow_data
+        if news_data:
+            payload["news_intelligence"] = news_data
 
+        user_prompt = (
+            f"Analyze the following market context and determine if we should trade:\n"
+            f"{json.dumps(payload, indent=2)}"
+        )
+        
         api_key = os.getenv("ANTHROPIC_API_KEY")
         if not api_key:
             logger.error("ANTHROPIC_API_KEY is not set — falling back to local mode")
-            return _local_orchestrator(market_data, portfolio, regime_data, mtf_data, sentiment_data)
+            return _local_orchestrator(market_data, portfolio, trend_data, regime_data, mtf_data, sentiment_data, sr_data, order_flow_data, news_data, active_strategy)
 
         client = anthropic.Anthropic(api_key=api_key)
 
@@ -397,17 +398,16 @@ def _ai_orchestrator(
 
         logger.info(
             "Orchestrator decision: analyze=%s, risk=%s, confidence=%.2f",
-            result["analyze"], result["risk_level"], result["confidence"],
+            result["trade_approved"], result.get("veto_reason"), result.get("conviction_score"),
         )
         return result
 
-    except json.JSONDecodeError as exc:
-        logger.error("Orchestrator JSON parse error: %s — falling back to local", exc)
-        return _local_orchestrator(market_data, portfolio, regime_data, mtf_data, sentiment_data)
-
-    except Exception as exc:  # noqa: BLE001
-        logger.error("Orchestrator API error: %s — falling back to local", exc)
-        return _local_orchestrator(market_data, portfolio, regime_data, mtf_data, sentiment_data)
+    except Exception as exc:
+        logger.error("Orchestrator AI agent error: %s", exc)
+        return _local_orchestrator(
+            market_data, portfolio, trend_data, regime_data, mtf_data, sentiment_data,
+            sr_data, order_flow_data, news_data, active_strategy
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -416,33 +416,37 @@ def _ai_orchestrator(
 def run_orchestrator(
     market_data: dict,
     portfolio: dict,
-    regime_data: dict | None = None,
-    mtf_data: dict | None = None,
-    sentiment_data: dict | None = None,
+    trend_data: dict = None,
+    regime_data: dict = None,
+    mtf_data: dict = None,
+    sentiment_data: dict = None,
+    sr_data: dict = None,
+    order_flow_data: dict = None,
+    news_data: dict = None,
+    active_strategy: dict = None,
 ) -> dict:
-    """Decide whether the system should analyze for a trade right now.
-
-    Automatically uses local rules (FREE) or Claude API based on
-    ``config.USE_AI_AGENTS``.  Falls back to local on any AI failure.
+    """Main entry point for the Orchestrator Agent.
 
     Parameters
     ----------
     market_data : dict
-        Latest 5M indicator snapshot.
+        Current state (bb_position, rsi, trend, macd, etc.)
     portfolio : dict
-        Current portfolio state.
-    regime_data : dict | None
-        Output from regime agent (Phase 1).
-    mtf_data : dict | None
-        Output from MTF confluence agent (Phase 1).
-    sentiment_data : dict | None
-        Output from sentiment agent (Phase 1).
-
-    Returns
-    -------
-    dict
-        Decision payload: analyze, reason, risk_level, confidence.
-        Always returns a valid dict — never raises.
+        Currently open positions, total value, etc.
+    trend_data : dict, optional
+        Output from Trend Agent
+    regime_data : dict, optional
+        Output from Regime Agent (from Phase 1)
+    mtf_data : dict, optional
+        Output from MTF Agent (from Phase 1)
+    sentiment_data : dict, optional
+        Output from Sentiment Agent (from Phase 1)
+    sr_data : dict, optional
+        Output from Support/Resistance Agent (from Phase 2)
+    order_flow_data : dict, optional
+        Output from Order Flow Agent (from Phase 2)
+    news_data : dict, optional
+        Output from News Agent (from Phase 2)
     """
     try:
         import config
@@ -451,6 +455,12 @@ def run_orchestrator(
         use_ai = False
 
     if use_ai:
-        return _ai_orchestrator(market_data, portfolio, regime_data, mtf_data, sentiment_data)
+        return _ai_orchestrator(
+            market_data, portfolio, trend_data, regime_data, mtf_data, sentiment_data,
+            sr_data, order_flow_data, news_data, active_strategy
+        )
     else:
-        return _local_orchestrator(market_data, portfolio, regime_data, mtf_data, sentiment_data)
+        return _local_orchestrator(
+            market_data, portfolio, trend_data, regime_data, mtf_data, sentiment_data,
+            sr_data, order_flow_data, news_data, active_strategy
+        )

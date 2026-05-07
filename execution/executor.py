@@ -66,6 +66,26 @@ async def _close_exchange(exchange: ccxt.binance) -> None:
         pass
 
 
+async def cancel_unfilled_after(orders: list[dict], seconds: int, symbol: str, testnet: bool) -> None:
+    """Cancel any remaining unfilled limit orders after a timeout."""
+    await asyncio.sleep(seconds)
+    
+    exchange = _build_exchange(testnet=testnet)
+    try:
+        open_orders = await exchange.fetch_open_orders(symbol)
+        open_order_ids = [str(o["id"]) for o in open_orders]
+        
+        for order in orders:
+            order_id = str(order.get("id"))
+            if order_id in open_order_ids:
+                logger.info(f"Cancelling unfilled limit order {order_id} after {seconds}s timeout.")
+                await exchange.cancel_order(order_id, symbol)
+    except Exception as exc:
+        logger.error(f"Failed to cancel unfilled orders: {exc}")
+    finally:
+        await _close_exchange(exchange)
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -109,6 +129,63 @@ async def place_order(
         logger.error("Order failed: %s", exc, exc_info=True)
         return {"status": "failed", "error": str(exc)}
 
+    finally:
+        await _close_exchange(exchange)
+
+async def smart_entry(
+    side: str,
+    symbol: str,
+    quantity: float,
+    entry_price: float,
+    atr: float,
+    testnet: bool = True,
+) -> list[dict]:
+    """
+    Layered limit order entry used by professional desks.
+    Instead of one market order, place 3 limit orders at slightly different levels.
+    This reduces slippage and averages into a better position.
+    """
+    exchange = _build_exchange(testnet=testnet)
+    orders = []
+    try:
+        # Split into 3 tranches
+        if side.lower() == "buy":
+            t1_price = entry_price                        # At signal price
+            t2_price = entry_price - (atr * 0.1)          # 10% of ATR below (better fill)
+            t3_price = entry_price - (atr * 0.2)          # 20% of ATR below (best fill)
+        else:
+            t1_price = entry_price                        # At signal price
+            t2_price = entry_price + (atr * 0.1)          # 10% of ATR above (better fill)
+            t3_price = entry_price + (atr * 0.2)          # 20% of ATR above (best fill)
+
+        t1_qty = quantity * 0.50  # 50% at signal
+        t2_qty = quantity * 0.30  # 30% slightly better
+        t3_qty = quantity * 0.20  # 20% even better
+
+        for price, qty in [(t1_price, t1_qty), (t2_price, t2_qty), (t3_price, t3_qty)]:
+            # Skip micro orders below binance limit
+            if qty < 0.0001:
+                continue
+                
+            logger.info(f"Placing LIMIT {side.upper()} order: {qty:.6f} {symbol} @ {price:.2f}")
+            order = await exchange.create_limit_order(
+                symbol=symbol,
+                side=side.lower(),
+                amount=round(qty, 6),
+                price=round(price, 2),
+                params={"timeInForce": "GTC"}
+            )
+            orders.append(order)
+            
+        # Cancel unfilled limit orders after 15 minutes (900 seconds)
+        if orders:
+            asyncio.create_task(cancel_unfilled_after(orders, 900, symbol, testnet))
+            
+        return orders
+        
+    except Exception as exc:
+        logger.error(f"Smart entry failed: {exc}", exc_info=True)
+        return orders
     finally:
         await _close_exchange(exchange)
 

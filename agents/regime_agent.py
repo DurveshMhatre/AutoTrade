@@ -65,7 +65,7 @@ SAFE_DEFAULT = {
 # ---------------------------------------------------------------------------
 VALID_REGIMES = {
     "STRONG_TREND_UP", "WEAK_TREND_UP", "RANGING",
-    "STRONG_TREND_DOWN", "DISTRIBUTION", "CAPITULATION", "CHOP",
+    "STRONG_TREND_DOWN", "WEAK_TREND_DOWN", "DISTRIBUTION", "CAPITULATION", "CHOP",
 }
 VALID_BIASES = {"trend_follow", "mean_revert", "flat", "short_only"}
 
@@ -246,6 +246,16 @@ def _local_regime_signal(mtf_indicators: dict) -> dict:
             "strategy_bias": "trend_follow",
             "position_size_multiplier": 0.8,
             "reasoning": f"Bullish daily + ADX {daily_adx:.0f} but EMA stack not fully aligned",
+        })
+
+    # 5b. WEAK_TREND_DOWN: Bearish but not fully aligned
+    if daily_trend == "bearish" and daily_adx > adx_chop_thresh:
+        return _validate({
+            "regime": "WEAK_TREND_DOWN",
+            "confidence": 0.65,
+            "strategy_bias": "flat",  # Spot bot can't short
+            "position_size_multiplier": 0.0,
+            "reasoning": f"Bearish daily + ADX {daily_adx:.0f} but EMA stack not fully aligned",
         })
 
     # 6. CHOP: ADX too low across timeframes = no direction

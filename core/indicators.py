@@ -267,3 +267,49 @@ def compute_mtf_indicators(candles: list) -> dict:
         "trend": _classify_trend(ema_20, ema_50),
         "volume_trend": _classify_volume_trend(df["volume"]),
     }
+
+
+def compute_vwap_and_poc(candles: list) -> dict:
+    """Compute Volume Weighted Average Price (VWAP) and Point of Control (POC).
+
+    Parameters
+    ----------
+    candles : list[dict]
+        OHLCV candle dicts. Usually the last 24h of data (e.g., 288 5m candles).
+
+    Returns
+    -------
+    dict
+        ``{"vwap": float, "poc_price": float}``
+    """
+    if not candles:
+        return {"vwap": 0.0, "poc_price": 0.0}
+
+    df = pd.DataFrame(candles)
+    for col in ("high", "low", "close", "volume"):
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    
+    # VWAP = sum(Typical Price * Volume) / sum(Volume)
+    typical_price = (df["high"] + df["low"] + df["close"]) / 3
+    cum_vol_price = (typical_price * df["volume"]).sum()
+    cum_vol = df["volume"].sum()
+    vwap = cum_vol_price / cum_vol if cum_vol > 0 else 0.0
+
+    # POC (Point of Control) - Price level with highest volume
+    # Simplify by binning close prices
+    poc_price = 0.0
+    if len(df) > 0 and cum_vol > 0:
+        # Create ~50 bins for price distribution
+        min_p, max_p = df["low"].min(), df["high"].max()
+        if max_p > min_p:
+            bins = pd.cut((df["high"] + df["low"]) / 2, bins=50)
+            vol_by_price = df.groupby(bins, observed=False)["volume"].sum()
+            poc_interval = vol_by_price.idxmax()
+            poc_price = poc_interval.mid if pd.notna(poc_interval) else 0.0
+        else:
+            poc_price = df["close"].iloc[-1]
+
+    return {
+        "vwap": round(float(vwap), 2),
+        "poc_price": round(float(poc_price), 2),
+    }

@@ -27,13 +27,11 @@ def _make_raw_data(
     fg_score=50,
     fg_label="neutral",
     funding_rate=0.0,
-    news_headlines=None,
 ) -> dict:
     """Build synthetic raw sentiment data."""
     return {
         "fear_greed": {"score": fg_score, "label": fg_label},
         "funding_rate": funding_rate,
-        "news_headlines": news_headlines or [],
     }
 
 
@@ -126,50 +124,15 @@ class TestLocalSentimentSignal:
         assert result["combined_sentiment"] == 0
         assert result["trade_bias_adjustment"] == "neutral"
 
-    def test_bullish_news_boosts(self):
-        """Bullish news keywords should boost sentiment."""
-        raw = _make_raw_data(
-            fg_score=50,
-            news_headlines=[
-                {"title": "Bitcoin ETF sees record inflows", "source": "CoinDesk", "kind": "news"},
-                {"title": "Institutional adoption accelerates", "source": "Reuters", "kind": "news"},
-            ],
-        )
-        result = _local_sentiment_signal(raw)
-        assert result["combined_sentiment"] > 0
-
-    def test_bearish_news_reduces(self):
-        """Bearish news keywords should reduce sentiment."""
-        raw = _make_raw_data(
-            fg_score=50,
-            news_headlines=[
-                {"title": "Major exchange hack drains $100M", "source": "CoinDesk", "kind": "news"},
-                {"title": "SEC launches investigation into crypto fraud", "source": "Bloomberg", "kind": "news"},
-            ],
-        )
-        result = _local_sentiment_signal(raw)
-        assert result["combined_sentiment"] < 0
-
     def test_strongly_negative_goes_flat(self):
-        """Extreme fear + high funding + bearish news → flat bias."""
+        """Extreme fear + high funding → flat bias."""
         raw = _make_raw_data(
             fg_score=8,
             funding_rate=0.005,
-            news_headlines=[
-                {"title": "Crypto crash wipes billions", "source": "Bloomberg", "kind": "news"},
-                {"title": "Major hack exploit discovered", "source": "CoinDesk", "kind": "news"},
-                {"title": "SEC ban on crypto trading", "source": "Reuters", "kind": "news"},
-            ],
         )
         result = _local_sentiment_signal(raw)
         assert result["combined_sentiment"] <= -6
         assert result["trade_bias_adjustment"] == "flat"
-
-    def test_no_news_stays_neutral(self):
-        """Empty news list → news_sentiment is neutral."""
-        raw = _make_raw_data(fg_score=50, news_headlines=[])
-        result = _local_sentiment_signal(raw)
-        assert result["news_sentiment"] == "neutral"
 
 
 # ---------------------------------------------------------------------------
@@ -209,7 +172,7 @@ class TestSentimentValidation:
         result = _validate({})
         for key in [
             "fear_greed_score", "fear_greed_label", "funding_rate",
-            "funding_signal", "news_sentiment", "combined_sentiment",
+            "funding_signal", "combined_sentiment",
             "trade_bias_adjustment", "risk_note",
         ]:
             assert key in result

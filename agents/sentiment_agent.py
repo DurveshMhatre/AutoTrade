@@ -41,15 +41,10 @@ ON-CHAIN SIGNALS:
 - Binance funding rate: Positive > 0.1% per 8h = overleveraged long (squeeze risk), Negative < -0.05% = over-shorted
 - Open interest trend: rising OI + rising price = strong trend
 
-NEWS SENTIMENT:
-- Score each headline -5 (very bearish) to +5 (very bullish)
-- Weight by source: Bloomberg/Reuters (1.5x), CoinDesk (1.0x), Twitter (0.7x)
-- Weight by category: Regulatory 2.0x, Institutional 1.5x, Hack/exploit 2.5x (always bearish), Macro 1.5x
-
 COMBINED SENTIMENT SCORE: -10 to +10
 
 Respond ONLY in JSON:
-{"fear_greed_score": int, "fear_greed_label": str, "funding_rate": float, "funding_signal": "overleveraged_long|overleveraged_short|neutral", "news_sentiment": str, "combined_sentiment": int(-10 to 10), "trade_bias_adjustment": "boost|neutral|reduce|flat", "risk_note": "..." }"""
+{"fear_greed_score": int, "fear_greed_label": str, "funding_rate": float, "funding_signal": "overleveraged_long|overleveraged_short|neutral", "combined_sentiment": int(-10 to 10), "trade_bias_adjustment": "boost|neutral|reduce|flat", "risk_note": "..." }"""
 
 # ---------------------------------------------------------------------------
 # Safe default
@@ -59,7 +54,6 @@ SAFE_DEFAULT = {
     "fear_greed_label": "neutral",
     "funding_rate": 0.0,
     "funding_signal": "neutral",
-    "news_sentiment": "neutral",
     "combined_sentiment": 0,
     "trade_bias_adjustment": "neutral",
     "risk_note": "Sentiment agent encountered an error -- defaulting to neutral",
@@ -112,54 +106,13 @@ async def _fetch_funding_rate(symbol: str = "BTCUSDT") -> float:
     return 0.0
 
 
-async def _fetch_crypto_news() -> list[dict]:
-    """Fetch recent crypto news headlines.
-
-    Tries CryptoPanic API first (requires free key in .env).
-    Falls back to a neutral empty list if no key or API fails.
-    """
-    api_key = os.getenv("CRYPTOPANIC_API_KEY", "")
-
-    if api_key:
-        url = (
-            f"https://cryptopanic.com/api/v1/posts/"
-            f"?auth_token={api_key}&public=true&filter=hot&currencies=BTC"
-        )
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        results = data.get("results", [])
-                        headlines = [
-                            {
-                                "title": r.get("title", ""),
-                                "source": r.get("source", {}).get("title", "unknown"),
-                                "kind": r.get("kind", "news"),
-                            }
-                            for r in results[:10]
-                        ]
-                        logger.info("CryptoPanic: fetched %d headlines", len(headlines))
-                        return headlines
-        except Exception as exc:
-            logger.warning("CryptoPanic fetch failed: %s", exc)
-
-    # Fallback: no news data available
-    logger.info("No CryptoPanic API key — news sentiment will be neutral")
-    return []
-
-
-# ---------------------------------------------------------------------------
-# Fetch all sentiment data in parallel
-# ---------------------------------------------------------------------------
 async def _fetch_all_sentiment_data() -> dict:
-    """Fetch fear/greed, funding rate, and news in parallel."""
+    """Fetch fear/greed and funding rate in parallel."""
     fg_task = _fetch_fear_greed()
     fr_task = _fetch_funding_rate()
-    news_task = _fetch_crypto_news()
 
-    fg_result, funding_rate, news_headlines = await asyncio.gather(
-        fg_task, fr_task, news_task, return_exceptions=True,
+    fg_result, funding_rate = await asyncio.gather(
+        fg_task, fr_task, return_exceptions=True,
     )
 
     # Handle any exceptions from gather
@@ -169,14 +122,10 @@ async def _fetch_all_sentiment_data() -> dict:
     if isinstance(funding_rate, Exception):
         logger.warning("Funding rate gather error: %s", funding_rate)
         funding_rate = 0.0
-    if isinstance(news_headlines, Exception):
-        logger.warning("News gather error: %s", news_headlines)
-        news_headlines = []
 
     return {
         "fear_greed": fg_result,
         "funding_rate": funding_rate,
-        "news_headlines": news_headlines,
     }
 
 
@@ -252,10 +201,6 @@ def _validate(parsed: dict) -> dict:
     if funding_signal not in VALID_FUNDING_SIGNALS:
         funding_signal = _classify_funding(funding)
 
-    news = str(parsed.get("news_sentiment", "neutral")).lower()
-    if news not in VALID_NEWS_SENTIMENTS:
-        news = "neutral"
-
     combined = parsed.get("combined_sentiment", 0)
     try:
         combined = int(combined)
@@ -274,7 +219,6 @@ def _validate(parsed: dict) -> dict:
         "fear_greed_label": fg_label,
         "funding_rate": round(funding, 6),
         "funding_signal": funding_signal,
-        "news_sentiment": news,
         "combined_sentiment": combined,
         "trade_bias_adjustment": bias_adj,
         "risk_note": risk_note,
@@ -298,8 +242,6 @@ def _local_sentiment_signal(raw_data: dict) -> dict:
 
     funding_rate = raw_data.get("funding_rate", 0.0)
     funding_signal = _classify_funding(funding_rate)
-
-    news_headlines = raw_data.get("news_headlines", [])
 
     # ── Combined sentiment scoring ────────────────────────────────
 
@@ -329,50 +271,8 @@ def _local_sentiment_signal(raw_data: dict) -> dict:
     elif funding_rate < -0.0005:
         sentiment_score += 1
 
-    # News contribution (simple keyword scan if headlines exist)
-    if news_headlines:
-        bullish_keywords = {
-            "etf", "approval", "institutional", "adoption", "rally",
-            "surge", "bullish", "record", "milestone", "launch",
-        }
-        bearish_keywords = {
-            "hack", "exploit", "ban", "regulation", "sec", "crash",
-            "scam", "fraud", "liquidation", "warning", "bearish",
-        }
-
-        news_score = 0
-        for headline in news_headlines:
-            title_lower = headline.get("title", "").lower()
-            for kw in bullish_keywords:
-                if kw in title_lower:
-                    news_score += 1
-                    break
-            for kw in bearish_keywords:
-                if kw in title_lower:
-                    news_score -= 1
-                    break
-
-        # Cap news contribution at -3 to +3
-        news_score = max(-3, min(3, news_score))
-        sentiment_score += news_score
-
     # Final clamping
     sentiment_score = max(-10, min(10, sentiment_score))
-
-    # Determine news sentiment label
-    if news_headlines:
-        if sentiment_score >= 5:
-            news_sentiment = "very_bullish"
-        elif sentiment_score >= 2:
-            news_sentiment = "bullish"
-        elif sentiment_score <= -5:
-            news_sentiment = "very_bearish"
-        elif sentiment_score <= -2:
-            news_sentiment = "bearish"
-        else:
-            news_sentiment = "neutral"
-    else:
-        news_sentiment = "neutral"
 
     # Determine trade bias adjustment
     if sentiment_score >= 4:
@@ -401,15 +301,14 @@ def _local_sentiment_signal(raw_data: dict) -> dict:
         "fear_greed_label": fg_label,
         "funding_rate": round(funding_rate, 6),
         "funding_signal": funding_signal,
-        "news_sentiment": news_sentiment,
         "combined_sentiment": sentiment_score,
         "trade_bias_adjustment": bias_adj,
         "risk_note": risk_note,
     }
 
     logger.info(
-        "Sentiment: F&G=%d(%s) | funding=%s | news=%s | combined=%+d | bias=%s",
-        fg_score, fg_label, funding_signal, news_sentiment,
+        "Sentiment: F&G=%d(%s) | funding=%s | combined=%+d | bias=%s",
+        fg_score, fg_label, funding_signal,
         sentiment_score, bias_adj,
     )
     return result

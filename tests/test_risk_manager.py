@@ -7,7 +7,7 @@ correct position sizing and price level calculations.
 
 import pytest
 
-from core.risk_manager import evaluate_trade
+from core.risk_manager import evaluate_trade, compute_portfolio_heat, compute_kelly_position_size
 
 
 # ---------------------------------------------------------------------------
@@ -264,3 +264,62 @@ class TestApprovedTrades:
         assert result["stop_loss_price"] is None
         assert result["take_profit_price"] is None
         assert result["risk_dollars"] is None
+
+# ---------------------------------------------------------------------------
+# PHASE 3 TESTS
+# ---------------------------------------------------------------------------
+class TestPhase3Risk:
+    def test_portfolio_heat(self):
+        """Test portfolio heat limits and calculation."""
+        open_positions = [
+            {"entry_price": 50000, "stop_loss": 48000, "quantity": 0.1}, # risk: 2000 * 0.1 = $200
+            {"entry_price": 100, "stop_loss": 90, "quantity": 10}        # risk: 10 * 10 = $100
+        ]
+        # total risk = $300
+        # portfolio = $10,000 -> 3% heat
+        res = compute_portfolio_heat(open_positions, 10000, "STRONG_TREND_UP")
+        assert res["current_heat_pct"] == 3.0
+        assert res["heat_status"] == "safe"
+        assert res["new_trade_blocked"] is False
+        assert res["max_heat_pct"] == 8.0
+        
+        # Test Choppy blocked limit
+        res_chop = compute_portfolio_heat(open_positions, 10000, "CHOP")
+        assert res_chop["new_trade_blocked"] is True
+        assert res_chop["max_heat_pct"] == 0.0
+
+    def test_kelly_position_size(self):
+        """Test Kelly fraction calculations."""
+        # 55% WR, 2.0 R:R
+        # f* = (0.55 * 2.0 - 0.45) / 2.0 = (1.1 - 0.45) / 2 = 0.65 / 2 = 0.325
+        # quarter kelly = 0.08125
+        
+        res = compute_kelly_position_size(
+            portfolio_balance=10000,
+            win_rate=0.55,
+            avg_win_pct=0.03,
+            avg_loss_pct=0.015,
+            signal_confidence=1.0,
+            regime_multiplier=1.0,
+            sentiment_adj=0.0
+        )
+        assert res["kelly_raw"] == 0.3250
+        assert res["quarter_kelly"] == 0.0813
+        # Hard cap at 3%
+        assert res["size_pct"] == 3.0
+        assert res["position_usd"] == 300.0
+        
+        # Test lower edge
+        res2 = compute_kelly_position_size(
+            portfolio_balance=10000,
+            win_rate=0.51,
+            avg_win_pct=0.02,
+            avg_loss_pct=0.018,
+            signal_confidence=0.8,
+            regime_multiplier=0.5,
+            sentiment_adj=0.0
+        )
+        assert res2["kelly_raw"] > 0
+        assert res2["quarter_kelly"] > 0
+        assert res2["size_pct"] < 3.0 # Not capped
+

@@ -15,6 +15,94 @@ logger = logging.getLogger(__name__)
 # Binance minimum order size for BTC
 MIN_BTC_QUANTITY = 0.0001
 
+# ── Phase 3: Dynamic Sizing & Heat Monitoring ───────────────────────
+
+def compute_portfolio_heat(open_positions: list[dict], portfolio_balance: float, current_regime: str) -> dict:
+    """
+    Portfolio heat = sum of all open risk as % of portfolio.
+    Risk per position = abs(entry - stop_loss) * quantity
+    """
+    if portfolio_balance <= 0:
+        return {"current_heat_pct": 0, "max_heat_pct": 0, "new_trade_blocked": True, "heat_status": "high", "slots_available": 0}
+
+    total_risk = sum(
+        abs(p.get("entry_price", 0) - p.get("stop_loss", 0)) * p.get("quantity", 0)
+        for p in open_positions
+    )
+    heat_pct = (total_risk / portfolio_balance) * 100
+
+    # Heat limits by regime
+    heat_limits = {
+        "STRONG_TREND_UP": 8.0,
+        "STRONG_TREND_DOWN": 8.0,
+        "WEAK_TREND_UP": 5.0,
+        "WEAK_TREND_DOWN": 3.0,
+        "RANGING": 4.0,
+        "CAPITULATION": 2.0,
+        "CHOP": 0.0,
+        "DISTRIBUTION": 0.0,
+        "default": 6.0
+    }
+    
+    max_heat = heat_limits.get(current_regime, heat_limits["default"])
+
+    return {
+        "current_heat_pct": round(heat_pct, 2),
+        "max_heat_pct": max_heat,
+        "new_trade_blocked": heat_pct >= max_heat,
+        "heat_status": "safe" if heat_pct < 4 else "moderate" if heat_pct < 6 else "high",
+        "slots_available": max(0, 3 - len(open_positions))
+    }
+
+def compute_kelly_position_size(
+    portfolio_balance: float,
+    win_rate: float,
+    avg_win_pct: float,
+    avg_loss_pct: float,
+    signal_confidence: float,
+    regime_multiplier: float,
+    sentiment_adj: float,
+) -> dict:
+    """
+    Compute dynamic position size using the Kelly Criterion.
+    """
+    if portfolio_balance <= 0 or avg_loss_pct <= 0:
+        return {"position_usd": 0.0, "size_pct": 0.0, "kelly_raw": 0.0, "quarter_kelly": 0.0, "reasoning": "invalid inputs"}
+        
+    b = avg_win_pct / avg_loss_pct
+    p = win_rate
+    q = 1.0 - p
+    
+    # Kelly formula: f* = (p*b - q) / b
+    kelly_fraction = (p * b - q) / b
+    
+    # Floor to zero (no edge = no trade)
+    if kelly_fraction <= 0:
+        kelly_fraction = 0.0
+        
+    # Quarter-Kelly for safety
+    quarter_kelly = kelly_fraction * 0.25
+    
+    # Adjust for signal quality and market conditions
+    size_pct = quarter_kelly * signal_confidence * regime_multiplier
+    
+    # Add sentiment adjustment safely
+    size_pct = size_pct * (1.0 + sentiment_adj)
+    
+    # Hard caps: never risk more than 3% even with perfect signals, min 0.5% if approved
+    if size_pct > 0:
+        size_pct = max(0.005, min(0.03, size_pct))
+        
+    position_usd = portfolio_balance * size_pct
+    
+    return {
+        "position_usd": round(position_usd, 2),
+        "size_pct": round(size_pct * 100, 2),
+        "kelly_raw": round(kelly_fraction, 4),
+        "quarter_kelly": round(quarter_kelly, 4),
+        "reasoning": f"Kelly={kelly_fraction:.1%}, QKelly={quarter_kelly:.1%}, final={size_pct:.1%}"
+    }
+
 
 def _rejected(reason: str) -> dict:
     """Return a standardised rejection payload."""
