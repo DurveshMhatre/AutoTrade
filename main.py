@@ -23,6 +23,7 @@ import asyncio
 import json
 import logging
 import os
+import aiohttp
 import time
 import traceback
 from datetime import datetime, timezone
@@ -361,8 +362,6 @@ async def run_bot() -> None:
             # Note: News is fetched using CryptoPanic fallback internally in the news agent if no AI.
             # But the AI agent expects headlines. For simplicity, we just pass an empty list and let it fetch internally.
             # Wait, `run_news_agent` in `news_agent.py` expects headlines. Let's fetch them first.
-            import os
-            import aiohttp
             headlines = []
             cp_key = os.getenv("CRYPTOPANIC_API_KEY", "")
             if cp_key:
