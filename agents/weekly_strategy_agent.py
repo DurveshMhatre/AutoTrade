@@ -3,13 +3,15 @@ Weekly Strategy Review Agent
 =============================
 Analyzes 7 days of trade autopsies and system decisions to propose 
 concrete improvements to the bot's configuration or agent prompts.
+
+Never crashes — returns a safe default on any failure, including
+missing anthropic package or API key.
 """
 
 import json
 import logging
 import os
 from typing import Dict, Any, List
-from anthropic import Anthropic
 
 logger = logging.getLogger(__name__)
 
@@ -41,11 +43,35 @@ Respond ONLY with valid JSON in the following format:
 }
 """
 
+# Safe default returned on any failure
+SAFE_DEFAULT = {
+    "verdict": "error",
+    "systematic_issues": [],
+    "rule_updates": [],
+    "summary": "Weekly review could not be completed."
+}
+
+
 def run_weekly_review(autopsies: List[dict], portfolio_stats: dict) -> Dict[str, Any]:
     """
     Run the weekly review analysis.
+    
+    Uses lazy import of anthropic to avoid crashing if the package
+    is not installed or no API key is configured.
     """
-    client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        logger.warning("ANTHROPIC_API_KEY not set — skipping weekly review.")
+        return {**SAFE_DEFAULT, "summary": "Skipped: no API key configured."}
+
+    # Lazy import — only loaded when actually called
+    try:
+        from anthropic import Anthropic
+    except ImportError:
+        logger.warning("anthropic package not installed — skipping weekly review.")
+        return {**SAFE_DEFAULT, "summary": "Skipped: anthropic package not installed."}
+
+    client = Anthropic(api_key=api_key)
 
     try:
         data_summary = {
@@ -77,9 +103,4 @@ def run_weekly_review(autopsies: List[dict], portfolio_stats: dict) -> Dict[str,
         return json.loads(raw_text)
     except Exception as e:
         logger.error(f"Weekly Strategy Agent failed: {e}")
-        return {
-            "verdict": "error",
-            "systematic_issues": [],
-            "rule_updates": [],
-            "summary": f"Failed to run analysis: {e}"
-        }
+        return {**SAFE_DEFAULT, "summary": f"Failed to run analysis: {e}"}

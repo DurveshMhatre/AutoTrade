@@ -3,9 +3,13 @@ core/data_feed.py
 ─────────────────
 Async data-feed layer for the Automated Trading Bot.
 
-• fetch_ohlcv   — historical OHLCV candles via REST
+• ExchangeSession   — reusable async context manager for exchange sessions
+• fetch_ohlcv       — historical OHLCV candles via REST
+• fetch_multi_timeframe — multi-TF candles in one session
+• fetch_order_book  — live depth
+• fetch_balance     — account USDT balance
 • get_current_price — latest ticker price via REST
-• stream_prices — real-time trade stream via WebSocket
+• stream_prices     — real-time trade stream via WebSocket
 """
 
 import asyncio
@@ -23,7 +27,7 @@ load_dotenv()
 
 # ─── Exchange factory ───────────────────────────────────────────────
 
-def _build_exchange(*, authenticated: bool = False) -> ccxt.binance:
+def _build_exchange(*, authenticated: bool = False, testnet: bool | None = None) -> ccxt.binance:
     """
     Return a ccxt async Binance instance.
 
@@ -32,8 +36,11 @@ def _build_exchange(*, authenticated: bool = False) -> ccxt.binance:
     authenticated : bool
         If True, attach API keys for private endpoints (order placement, etc.).
         If False (default), create a lightweight public-only instance.
+    testnet : bool | None
+        Override testnet flag. If None, reads from BINANCE_TESTNET env var.
     """
-    testnet = os.getenv("BINANCE_TESTNET", "false").lower() == "true"
+    if testnet is None:
+        testnet = os.getenv("BINANCE_TESTNET", "false").lower() == "true"
 
     # Use ThreadedResolver to avoid aiodns/c-ares DNS issues on Windows
     connector = aiohttp.TCPConnector(resolver=aiohttp.ThreadedResolver())
@@ -80,6 +87,38 @@ def _log(msg: str) -> None:
     print(f"[{ts}] {msg}")
 
 
+# ─── Reusable Exchange Session ──────────────────────────────────────
+
+class ExchangeSession:
+    """Async context manager that creates a single exchange session
+    and cleans it up on exit. Pass the exchange object to all data
+    functions within the same cycle to avoid repeated TCP/SSL handshakes.
+
+    Usage::
+
+        async with ExchangeSession(authenticated=True) as exchange:
+            candles = await fetch_ohlcv("BTC/USDT", exchange=exchange)
+            balance = await fetch_balance(exchange=exchange)
+    """
+
+    def __init__(self, *, authenticated: bool = False, testnet: bool | None = None):
+        self._authenticated = authenticated
+        self._testnet = testnet
+        self._exchange: ccxt.binance | None = None
+
+    async def __aenter__(self) -> ccxt.binance:
+        self._exchange = _build_exchange(
+            authenticated=self._authenticated,
+            testnet=self._testnet,
+        )
+        return self._exchange
+
+    async def __aexit__(self, *args) -> None:
+        if self._exchange:
+            await _close_exchange(self._exchange)
+            self._exchange = None
+
+
 # ─── 1. Historical OHLCV ────────────────────────────────────────────
 
 async def fetch_ohlcv(
@@ -87,6 +126,7 @@ async def fetch_ohlcv(
     timeframe: str = "5m",
     limit: int = 200,
     max_retries: int = 3,
+    exchange: ccxt.binance | None = None,
 ) -> list[dict]:
     """
     Fetch historical OHLCV candles from Binance.
@@ -94,10 +134,16 @@ async def fetch_ohlcv(
     Returns a list of dicts:
         [{timestamp, open, high, low, close, volume}, ...]
 
-    Retries up to *max_retries* times on NetworkError / ExchangeError
-    with exponential back-off (2 ** attempt seconds).
+    Parameters
+    ----------
+    exchange : ccxt.binance | None
+        If provided, reuse this exchange session (no cleanup).
+        If None, create and clean up a temporary session.
     """
-    exchange = _build_exchange()
+    own_exchange = exchange is None
+    if own_exchange:
+        exchange = _build_exchange()
+
     last_exc: Exception | None = None
 
     try:
@@ -133,7 +179,8 @@ async def fetch_ohlcv(
         raise last_exc  # type: ignore[misc]
 
     finally:
-        await _close_exchange(exchange)
+        if own_exchange:
+            await _close_exchange(exchange)
 
 
 # ─── 1b. Multi-Timeframe OHLCV ─────────────────────────────────────
@@ -142,6 +189,7 @@ async def fetch_multi_timeframe(
     symbol: str = "BTC/USDT",
     timeframes: dict | None = None,
     max_retries: int = 3,
+    exchange: ccxt.binance | None = None,
 ) -> dict[str, list[dict]]:
     """Fetch OHLCV candles for multiple timeframes using a single exchange session.
 
@@ -154,6 +202,8 @@ async def fetch_multi_timeframe(
         Defaults to ``{"1h": 200, "4h": 100, "1d": 60}``.
     max_retries : int
         Retry count per timeframe.
+    exchange : ccxt.binance | None
+        If provided, reuse this exchange session.
 
     Returns
     -------
@@ -164,7 +214,10 @@ async def fetch_multi_timeframe(
     if timeframes is None:
         timeframes = {"1h": 200, "4h": 100, "1d": 60}
 
-    exchange = _build_exchange()
+    own_exchange = exchange is None
+    if own_exchange:
+        exchange = _build_exchange()
+
     result: dict[str, list[dict]] = {}
 
     try:
@@ -199,14 +252,19 @@ async def fetch_multi_timeframe(
             result[tf] = candles
 
     finally:
-        await _close_exchange(exchange)
+        if own_exchange:
+            await _close_exchange(exchange)
 
     return result
 
 
 # ─── 1c. Order Book (Depth) ────────────────────────────────────────
 
-async def fetch_order_book(symbol: str = "BTC/USDT", limit: int = 50) -> dict:
+async def fetch_order_book(
+    symbol: str = "BTC/USDT",
+    limit: int = 50,
+    exchange: ccxt.binance | None = None,
+) -> dict:
     """Fetch the order book depth from Binance.
 
     Parameters
@@ -215,13 +273,17 @@ async def fetch_order_book(symbol: str = "BTC/USDT", limit: int = 50) -> dict:
         Trading pair.
     limit : int
         Number of bids and asks to fetch.
+    exchange : ccxt.binance | None
+        If provided, reuse this exchange session.
 
     Returns
     -------
     dict
         ``{"bids": [[price, amount], ...], "asks": [[price, amount], ...]}``
     """
-    exchange = _build_exchange()
+    own_exchange = exchange is None
+    if own_exchange:
+        exchange = _build_exchange()
     try:
         order_book = await exchange.fetch_order_book(symbol, limit=limit)
         return {
@@ -232,21 +294,65 @@ async def fetch_order_book(symbol: str = "BTC/USDT", limit: int = 50) -> dict:
         _log(f"fetch_order_book failed: {exc}")
         return {"bids": [], "asks": []}
     finally:
-        await _close_exchange(exchange)
+        if own_exchange:
+            await _close_exchange(exchange)
+
+
+# ─── 1d. Account Balance ───────────────────────────────────────────
+
+async def fetch_balance(
+    exchange: ccxt.binance | None = None,
+    testnet: bool | None = None,
+) -> float:
+    """Fetch the free USDT balance from Binance.
+
+    Parameters
+    ----------
+    exchange : ccxt.binance | None
+        If provided, reuse this **authenticated** exchange session.
+        If None, create a temporary authenticated session.
+    testnet : bool | None
+        Override testnet flag. Only used when creating a temp session.
+
+    Returns
+    -------
+    float
+        Free USDT balance.
+    """
+    own_exchange = exchange is None
+    if own_exchange:
+        exchange = _build_exchange(authenticated=True, testnet=testnet)
+    try:
+        balance = await exchange.fetch_balance()
+        usdt_free = float(balance.get("USDT", {}).get("free", 0))
+        _log(f"fetch_balance: USDT free = {usdt_free:.2f}")
+        return usdt_free
+    except Exception as exc:
+        _log(f"fetch_balance failed: {exc}")
+        return 0.0
+    finally:
+        if own_exchange:
+            await _close_exchange(exchange)
 
 
 # ─── 2. Current ticker price ────────────────────────────────────────
 
-async def get_current_price(symbol: str = "BTC/USDT") -> float:
+async def get_current_price(
+    symbol: str = "BTC/USDT",
+    exchange: ccxt.binance | None = None,
+) -> float:
     """Return the latest ticker price for *symbol* as a float."""
-    exchange = _build_exchange()
+    own_exchange = exchange is None
+    if own_exchange:
+        exchange = _build_exchange()
     try:
         ticker = await exchange.fetch_ticker(symbol)
         price = float(ticker["last"])
         _log(f"get_current_price: {symbol} → {price}")
         return price
     finally:
-        await _close_exchange(exchange)
+        if own_exchange:
+            await _close_exchange(exchange)
 
 
 # ─── 3. WebSocket trade stream ──────────────────────────────────────

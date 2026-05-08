@@ -3,13 +3,15 @@ Autopsy Agent
 ==============
 Runs post-trade analysis using Anthropic Claude to determine entry/exit quality, 
 root causes of losses, and actionable lessons for the bot's weekly review.
+
+Never crashes — returns a safe default on any failure, including missing API key
+or missing anthropic package.
 """
 
 import json
 import logging
 import os
 from typing import Dict, Any
-from anthropic import Anthropic
 
 logger = logging.getLogger(__name__)
 
@@ -51,9 +53,23 @@ Respond ONLY with valid JSON in the following format:
 }
 """
 
+# Safe default returned when autopsy can't run
+SAFE_DEFAULT = {
+    "entry_grade": "C",
+    "exit_quality": "unknown",
+    "root_cause": None,
+    "lesson": "Autopsy skipped.",
+    "pattern_detected": 0,
+    "pattern_description": None,
+}
+
+
 def run_autopsy_agent(trade_data: dict, market_context: dict) -> Dict[str, Any]:
     """
     Run the autopsy analysis on a closed trade.
+    
+    Uses lazy import of anthropic to avoid crashing if the package
+    is not installed or no API key is configured.
     """
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
@@ -66,6 +82,13 @@ def run_autopsy_agent(trade_data: dict, market_context: dict) -> Dict[str, Any]:
             "pattern_detected": 0,
             "pattern_description": None
         }
+
+    # Lazy import — only loaded when actually called
+    try:
+        from anthropic import Anthropic
+    except ImportError:
+        logger.warning("anthropic package not installed — skipping autopsy.")
+        return dict(SAFE_DEFAULT)
 
     client = Anthropic(api_key=api_key)
 

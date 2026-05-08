@@ -5,8 +5,12 @@ Order execution layer using ccxt async Binance.
 
 Functions
 ---------
-place_order         -- place a MARKET spot order
+place_order            -- place a MARKET spot order
+smart_entry            -- layered limit order entry (3 tranches)
+check_order_status     -- check fill status of an order
+cancel_unfilled_after  -- auto-cancel unfilled limits after timeout
 cancel_all_open_orders -- cancel every open order for a symbol
+fetch_open_orders      -- fetch all open orders for reconciliation
 """
 
 import asyncio
@@ -95,6 +99,7 @@ async def place_order(
     symbol: str,
     quantity: float,
     testnet: bool = True,
+    exchange: ccxt.binance | None = None,
 ) -> dict:
     """Place a MARKET spot order on Binance.
 
@@ -108,6 +113,8 @@ async def place_order(
         Amount to trade (in base currency, e.g. BTC).
     testnet : bool
         If ``True`` (default), use Binance testnet sandbox.
+    exchange : ccxt.binance | None
+        If provided, reuse this exchange session.
 
     Returns
     -------
@@ -115,7 +122,9 @@ async def place_order(
         Full ccxt order dict on success, or
         ``{"status": "failed", "error": "..."}`` on failure.
     """
-    exchange = _build_exchange(testnet=testnet)
+    own_exchange = exchange is None
+    if own_exchange:
+        exchange = _build_exchange(testnet=testnet)
     try:
         logger.info(
             "Placing MARKET %s order: %s %.6f (testnet=%s)",
@@ -130,7 +139,9 @@ async def place_order(
         return {"status": "failed", "error": str(exc)}
 
     finally:
-        await _close_exchange(exchange)
+        if own_exchange:
+            await _close_exchange(exchange)
+
 
 async def smart_entry(
     side: str,
@@ -139,13 +150,21 @@ async def smart_entry(
     entry_price: float,
     atr: float,
     testnet: bool = True,
+    exchange: ccxt.binance | None = None,
 ) -> list[dict]:
     """
     Layered limit order entry used by professional desks.
     Instead of one market order, place 3 limit orders at slightly different levels.
     This reduces slippage and averages into a better position.
+
+    Parameters
+    ----------
+    exchange : ccxt.binance | None
+        If provided, reuse this exchange session.
     """
-    exchange = _build_exchange(testnet=testnet)
+    own_exchange = exchange is None
+    if own_exchange:
+        exchange = _build_exchange(testnet=testnet)
     orders = []
     try:
         # Split into 3 tranches
@@ -187,10 +206,98 @@ async def smart_entry(
         logger.error(f"Smart entry failed: {exc}", exc_info=True)
         return orders
     finally:
-        await _close_exchange(exchange)
+        if own_exchange:
+            await _close_exchange(exchange)
 
 
-async def cancel_all_open_orders(symbol: str, testnet: bool = True) -> bool:
+async def check_order_status(
+    order_id: str,
+    symbol: str,
+    testnet: bool = True,
+    exchange: ccxt.binance | None = None,
+) -> dict:
+    """Check the fill status of a specific order.
+
+    Parameters
+    ----------
+    order_id : str
+        The exchange order ID to check.
+    symbol : str
+        Trading pair.
+    testnet : bool
+        If True, use testnet.
+    exchange : ccxt.binance | None
+        If provided, reuse this exchange session.
+
+    Returns
+    -------
+    dict
+        ``{"id", "status", "filled", "remaining", "average"}``
+        status is one of: "open", "closed", "canceled"
+    """
+    own_exchange = exchange is None
+    if own_exchange:
+        exchange = _build_exchange(testnet=testnet)
+    try:
+        order = await exchange.fetch_order(order_id, symbol)
+        return {
+            "id": order.get("id"),
+            "status": order.get("status"),  # open, closed, canceled
+            "filled": float(order.get("filled", 0)),
+            "remaining": float(order.get("remaining", 0)),
+            "average": float(order.get("average", 0)) if order.get("average") else None,
+        }
+    except Exception as exc:
+        logger.error("check_order_status failed for %s: %s", order_id, exc)
+        return {"id": order_id, "status": "unknown", "filled": 0, "remaining": 0, "average": None}
+    finally:
+        if own_exchange:
+            await _close_exchange(exchange)
+
+
+async def fetch_open_orders(
+    symbol: str,
+    testnet: bool = True,
+    exchange: ccxt.binance | None = None,
+) -> list[dict]:
+    """Fetch all open orders for a symbol from the exchange.
+
+    Used by the reconciliation loop to compare exchange state vs DB state.
+
+    Parameters
+    ----------
+    symbol : str
+        Trading pair.
+    testnet : bool
+        If True, use testnet.
+    exchange : ccxt.binance | None
+        If provided, reuse this exchange session.
+
+    Returns
+    -------
+    list[dict]
+        List of open order dicts from ccxt.
+    """
+    own_exchange = exchange is None
+    if own_exchange:
+        exchange = _build_exchange(testnet=testnet)
+    try:
+        open_orders = await exchange.fetch_open_orders(symbol)
+        logger.info("fetch_open_orders: %d open orders for %s", len(open_orders), symbol)
+        return open_orders
+    except Exception as exc:
+        logger.error("fetch_open_orders failed: %s", exc)
+        return []
+    finally:
+        if own_exchange:
+            await _close_exchange(exchange)
+
+
+async def cancel_all_open_orders(
+    symbol: str,
+    testnet: bool = True,
+    exchange: ccxt.binance | None = None,
+) -> bool:
     """Cancel every open order for *symbol*.
 
     Parameters
@@ -199,6 +306,8 @@ async def cancel_all_open_orders(symbol: str, testnet: bool = True) -> bool:
         Trading pair, e.g. ``"BTC/USDT"``.
     testnet : bool
         If ``True`` (default), use Binance testnet sandbox.
+    exchange : ccxt.binance | None
+        If provided, reuse this exchange session.
 
     Returns
     -------
@@ -206,7 +315,9 @@ async def cancel_all_open_orders(symbol: str, testnet: bool = True) -> bool:
         ``True`` if all open orders were cancelled (or none existed),
         ``False`` on any failure.
     """
-    exchange = _build_exchange(testnet=testnet)
+    own_exchange = exchange is None
+    if own_exchange:
+        exchange = _build_exchange(testnet=testnet)
     try:
         open_orders = await exchange.fetch_open_orders(symbol)
         if not open_orders:
@@ -225,4 +336,5 @@ async def cancel_all_open_orders(symbol: str, testnet: bool = True) -> bool:
         return False
 
     finally:
-        await _close_exchange(exchange)
+        if own_exchange:
+            await _close_exchange(exchange)

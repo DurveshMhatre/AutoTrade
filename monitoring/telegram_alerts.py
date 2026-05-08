@@ -18,6 +18,7 @@ Backward-compatible alias:
 
 import logging
 import os
+import time
 
 import aiohttp
 from dotenv import load_dotenv
@@ -35,6 +36,12 @@ ALERT_PREFIXES = {
     "info": "*INFO*",
     "daily": "*DAILY REPORT*",
 }
+
+# ---------------------------------------------------------------------------
+# Rate limiter — prevent Telegram API throttling in error loops
+# ---------------------------------------------------------------------------
+_last_alert_ts: float = 0.0
+_MIN_ALERT_INTERVAL: float = 10.0  # Max 1 alert per 10 seconds
 
 
 # ---------------------------------------------------------------------------
@@ -56,6 +63,14 @@ async def send_alert(message: str, alert_type: str = "info") -> bool:
     bool
         ``True`` if the message was delivered (or printed), ``False`` on failure.
     """
+    global _last_alert_ts
+
+    # Rate limiting — skip if too soon after last alert
+    now = time.time()
+    if now - _last_alert_ts < _MIN_ALERT_INTERVAL:
+        logger.debug("Telegram rate limited — skipping alert (type=%s)", alert_type)
+        return True
+    _last_alert_ts = now
     prefix = ALERT_PREFIXES.get(alert_type, ALERT_PREFIXES["info"])
     full_message = f"{prefix} | {message}"
 

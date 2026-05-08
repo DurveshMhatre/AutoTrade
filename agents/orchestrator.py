@@ -233,7 +233,19 @@ def _local_orchestrator(
         return veto
 
     trend = trend_data.get("signal", "FLAT") if trend_data else market_data.get("trend", "FLAT").upper()
-    if trend not in ("BUY", "SELL"):
+
+    # Spot-only bot: SELL signal = flatten existing longs (can't open shorts)
+    if trend == "SELL":
+        return {
+            "trade_approved": True,
+            "conviction_score": 60,
+            "veto_reason": None,
+            "final_signal": "FLATTEN",
+            "position_size_tier": "full",
+            "summary": "SELL signal: flattening existing longs (spot-only, no short).",
+        }
+
+    if trend not in ("BUY",):
         return {
             "trade_approved": False,
             "conviction_score": 0,

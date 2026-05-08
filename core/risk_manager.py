@@ -26,7 +26,7 @@ def compute_portfolio_heat(open_positions: list[dict], portfolio_balance: float,
         return {"current_heat_pct": 0, "max_heat_pct": 0, "new_trade_blocked": True, "heat_status": "high", "slots_available": 0}
 
     total_risk = sum(
-        abs(p.get("entry_price", 0) - p.get("stop_loss", 0)) * p.get("quantity", 0)
+        abs(p.get("price", p.get("entry_price", 0)) - p.get("stop_loss", 0)) * p.get("quantity", 0)
         for p in open_positions
     )
     heat_pct = (total_risk / portfolio_balance) * 100

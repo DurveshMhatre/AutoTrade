@@ -19,7 +19,7 @@ MTF_TIMEFRAMES = {"1h": 200, "4h": 100, "1d": 60}
 # ── Regime Agent Settings ──────────────────────────────────────
 REGIME_ADX_TREND_THRESHOLD = 25       # ADX above this = trending
 REGIME_ADX_CHOP_THRESHOLD = 20        # ADX below this = chop/no direction
-REGIME_CACHE_SECONDS = 900            # Cache regime result for 15 minutes
+REGIME_CACHE_SECONDS = 300            # Cache regime result for 5 minutes (matches candle cycle)
 
 # ── Sentiment Agent Settings ──────────────────────────────────
 SENTIMENT_FEAR_EXTREME = 20           # Below = extreme fear

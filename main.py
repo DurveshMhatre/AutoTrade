@@ -31,7 +31,7 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 
 # ── Core ────────────────────────────────────────────────────────────
-from core.data_feed import fetch_ohlcv, fetch_multi_timeframe, fetch_order_book
+from core.data_feed import fetch_ohlcv, fetch_multi_timeframe, fetch_order_book, fetch_balance, ExchangeSession
 from core.indicators import compute_indicators, compute_mtf_indicators, compute_vwap_and_poc
 from core.database import init_db, save_trade, save_decision, get_open_trades, update_trade_status, save_regime, update_trade_quantity, save_autopsy, get_trade_by_id
 from core.risk_manager import evaluate_trade, compute_portfolio_heat, compute_kelly_position_size
@@ -49,7 +49,7 @@ from agents.news_agent import run_news_agent
 from agents.autopsy_agent import run_autopsy_agent
 
 # ── Execution ───────────────────────────────────────────────────────
-from execution.executor import place_order, smart_entry
+from execution.executor import place_order, smart_entry, check_order_status, fetch_open_orders
 
 # ── Monitoring ──────────────────────────────────────────────────────
 from monitoring.telegram_alerts import send_telegram_alert
@@ -90,29 +90,30 @@ def _config_dict() -> dict:
 # Global state for TrailingStopManagers
 _active_trade_managers = {}
 
-async def background_autopsy(db, trade_id: int, market_data: dict):
-    """Run autopsy in background without blocking the main loop."""
+async def background_autopsy(trade_id: int, market_data: dict):
+    """Run autopsy in background with its own DB connection (C5 fix)."""
     try:
-        # Give DB a moment to flush
         await asyncio.sleep(2)
-        trade = get_trade_by_id(db, trade_id)
-        if not trade:
-            return
-            
-        logger.info(f"Running Autopsy on closed trade {trade_id}...")
-        autopsy_result = run_autopsy_agent(trade, market_data)
-        
-        save_autopsy(db, {
-            "timestamp": int(time.time()),
-            "trade_id": trade_id,
-            "entry_grade": autopsy_result.get("entry_grade"),
-            "exit_quality": autopsy_result.get("exit_quality"),
-            "root_cause": autopsy_result.get("root_cause"),
-            "lesson": autopsy_result.get("lesson"),
-            "pattern_detected": autopsy_result.get("pattern_detected", 0),
-            "pattern_description": autopsy_result.get("pattern_description")
-        })
-        logger.info(f"Autopsy for {trade_id} saved. Grade: {autopsy_result.get('entry_grade')} | Lesson: {autopsy_result.get('lesson')}")
+        bg_db = init_db()
+        try:
+            trade = get_trade_by_id(bg_db, trade_id)
+            if not trade:
+                return
+            logger.info(f"Running Autopsy on closed trade {trade_id}...")
+            autopsy_result = run_autopsy_agent(trade, market_data)
+            save_autopsy(bg_db, {
+                "timestamp": int(time.time()),
+                "trade_id": trade_id,
+                "entry_grade": autopsy_result.get("entry_grade"),
+                "exit_quality": autopsy_result.get("exit_quality"),
+                "root_cause": autopsy_result.get("root_cause"),
+                "lesson": autopsy_result.get("lesson"),
+                "pattern_detected": autopsy_result.get("pattern_detected", 0),
+                "pattern_description": autopsy_result.get("pattern_description")
+            })
+            logger.info(f"Autopsy for {trade_id} saved. Grade: {autopsy_result.get('entry_grade')} | Lesson: {autopsy_result.get('lesson')}")
+        finally:
+            bg_db.close()
     except Exception as e:
         logger.error(f"Background autopsy failed for {trade_id}: {e}")
 
@@ -200,7 +201,7 @@ async def sync_portfolio(db, market_data: dict, portfolio: dict, testnet_flag: b
                         pass
                     
                     # Trigger autopsy
-                    asyncio.create_task(background_autopsy(db, trade_id, market_data))
+                    asyncio.create_task(background_autopsy(trade_id, market_data))
 
 # ────────────────────────────────────────────────────────────────────
 # Main bot loop
@@ -217,14 +218,26 @@ async def run_bot() -> None:
     # 2. Initialise database
     db = init_db()
 
-    # 3. Initialise portfolio state
+    # 3. Initialise portfolio state — sync balance from exchange (C1 fix)
+    try:
+        initial_balance = await fetch_balance(testnet=testnet_flag)
+        if initial_balance <= 0:
+            logger.warning("Balance sync returned 0, using fallback $1000")
+            initial_balance = 1000.0
+    except Exception as e:
+        logger.warning("Initial balance fetch failed: %s — using $1000", e)
+        initial_balance = 1000.0
+
     portfolio = {
-        "usdt_balance": 1000.0,
-        "open_positions": 0,
+        "usdt_balance": initial_balance,
+        "open_positions": len(get_open_trades(db)),
         "daily_loss_pct": 0.0,
         "daily_pnl": 0.0,
         "session_trades": 0,
     }
+    _last_reset_date = datetime.now(timezone.utc).date()
+    _cycle_count = 0
+    _reconcile_counter = 0
 
     # 4. Startup banner
     print("=" * 60)
@@ -245,7 +258,27 @@ async def run_bot() -> None:
     while True:
         try:
             cycle_start = time.time()
-            logger.info("--- Cycle start: %s ---", _ts())
+            _cycle_count += 1
+            logger.info("--- Cycle #%d start: %s ---", _cycle_count, _ts())
+
+            # ── Daily PnL reset at UTC midnight (C6 fix) ──────────
+            now_utc = datetime.now(timezone.utc)
+            if now_utc.date() != _last_reset_date:
+                logger.info("Daily reset: PnL was $%.2f, resetting.", portfolio["daily_pnl"])
+                portfolio["daily_pnl"] = 0.0
+                portfolio["daily_loss_pct"] = 0.0
+                _last_reset_date = now_utc.date()
+
+            # ── Sync balance from exchange (C1 fix) — light check ─
+            try:
+                actual_balance = await fetch_balance(testnet=testnet_flag)
+                if actual_balance > 0:
+                    portfolio["usdt_balance"] = actual_balance
+            except Exception as e:
+                logger.warning("Balance sync failed, using last known: %s", e)
+
+            # ── Sync position counter from DB (H2 fix) ────────────
+            portfolio["open_positions"] = len(get_open_trades(db))
 
             # ── a) Fetch OHLCV candles (5M — primary timeframe) ────
             logger.info("Fetching OHLCV data for %s ...", config.SYMBOL)
@@ -473,7 +506,51 @@ async def run_bot() -> None:
                 await asyncio.sleep(60)
                 continue
 
-            # ── l) Dynamic Position Sizing (Kelly Criterion) ────────
+            # ── k2) Handle FLATTEN signal — close existing longs ──
+            if orch_result.get("final_signal") == "FLATTEN":
+                open_trades = get_open_trades(db)
+                if open_trades:
+                    logger.info("FLATTEN: Closing %d open long(s).", len(open_trades))
+                    for ot in open_trades:
+                        try:
+                            close_qty = ot.get("quantity", 0)
+                            if close_qty >= 0.0001:
+                                result = await place_order("sell", config.SYMBOL, close_qty, testnet=testnet_flag)
+                                if result.get("status") != "failed":
+                                    close_price = market_data.get("close", 0)
+                                    pnl = (close_price - ot.get("price", 0)) * close_qty
+                                    update_trade_status(db, ot["id"], "closed", close_price, pnl)
+                                    portfolio["daily_pnl"] += pnl
+                                    trade_id = ot["id"]
+                                    _active_trade_managers.pop(trade_id, None)
+                                    asyncio.create_task(background_autopsy(trade_id, market_data))
+                                    await send_telegram_alert(
+                                        f"📤 *FLATTEN* — Closed long #{trade_id}\n"
+                                        f"PnL: `${pnl:,.2f}` | Reason: SELL signal"
+                                    )
+                        except Exception as e:
+                            logger.error("FLATTEN close failed for trade %s: %s", ot.get("id"), e)
+                else:
+                    logger.info("FLATTEN signal but no open longs to close.")
+                await asyncio.sleep(60)
+                continue
+
+            # ── k3) Re-enable risk manager hard blocks (H5 fix) ───
+            risk_check = evaluate_trade(
+                {"signal": orch_result["final_signal"],
+                 "confidence": orch_result.get("conviction_score", 0) / 100.0},
+                portfolio, market_data,
+                {"MIN_CONFIDENCE": config.MIN_CONFIDENCE,
+                 "MAX_POSITIONS": config.MAX_POSITIONS,
+                 "DAILY_LOSS_LIMIT_PCT": config.DAILY_LOSS_LIMIT_PCT,
+                 "RISK_PER_TRADE_PCT": config.RISK_PER_TRADE_PCT,
+                 "STOP_LOSS_PCT": config.STOP_LOSS_PCT,
+                 "TAKE_PROFIT_PCT": config.TAKE_PROFIT_PCT}
+            )
+            if not risk_check.get("approved"):
+                logger.info("Risk manager blocked: %s", risk_check.get("reason"))
+                await asyncio.sleep(60)
+                continue
             # Compute stats from trade history (last 30 closed trades)
             from core.database import get_recent_trades
             closed_trades = [t for t in get_recent_trades(db, limit=50) if t.get("status") == "closed"]
@@ -532,21 +609,35 @@ async def run_bot() -> None:
             )
 
             if orders:
-                # Calculate aggregate position size if partially filled instantly
-                filled_qty = sum([o.get("amount", 0) for o in orders])
-                if filled_qty > 0:
-                    # Save trade to database
+                # C2/C3 fix: Wait briefly, then check actual fill status
+                await asyncio.sleep(5)
+                filled_qty = 0.0
+                avg_fill_price = entry_price
+                for o in orders:
+                    try:
+                        order_status = await check_order_status(
+                            str(o.get("id")), config.SYMBOL, testnet=testnet_flag
+                        )
+                        if order_status.get("filled", 0) > 0:
+                            filled_qty += order_status["filled"]
+                            if order_status.get("average"):
+                                avg_fill_price = order_status["average"]
+                    except Exception as e:
+                        logger.warning("Order status check failed: %s", e)
+
+                if filled_qty >= 0.0001:
+                    # Save trade to database with actual fill data
                     trade_record = {
                         "timestamp": int(time.time()),
                         "symbol": config.SYMBOL,
                         "side": side,
-                        "price": entry_price, # We use signal price as avg entry for tracking
+                        "price": avg_fill_price,
                         "quantity": filled_qty,
                         "reason": orch_result.get("summary", ""),
                         "pnl": 0.0,
                         "status": "open",
-                        "stop_loss": entry_price - (atr * 2) if side == "buy" else entry_price + (atr * 2),
-                        "take_profit": 0, # Not used in DB anymore, managed by TrailingStopManager
+                        "stop_loss": avg_fill_price - (atr * 2) if side == "buy" else avg_fill_price + (atr * 2),
+                        "take_profit": 0,
                     }
                     save_trade(db, trade_record)
 
@@ -565,8 +656,8 @@ async def run_bot() -> None:
                         f"*SMART TRADE EXECUTED (ELITE v3)*\n"
                         f"Side: `{side.upper()}`\n"
                         f"Symbol: `{config.SYMBOL}`\n"
-                        f"Target Qty: `{qty:.6f} BTC`\n"
-                        f"Layered Entry: `${entry_price:,.2f}` avg\n"
+                        f"Filled Qty: `{filled_qty:.6f} BTC`\n"
+                        f"Avg Fill: `${avg_fill_price:,.2f}`\n"
                         f"Conviction: `{orch_result.get('conviction_score', 0)}`\n"
                         f"Size Tier: `{orch_result.get('position_size_tier', '50')}%`\n"
                         f"Reason: `{orch_result.get('summary', 'Approved')}`\n"
@@ -575,15 +666,17 @@ async def run_bot() -> None:
                     await send_telegram_alert(alert_msg)
 
                     portfolio["session_trades"] += 1
+                else:
+                    logger.info("No fills yet — limit orders placed, will be tracked.")
             else:
                 logger.error("Smart entry failed to place any limit orders.")
 
             # ── n) Cycle summary ───────────────────────────────────
             elapsed = time.time() - cycle_start
             logger.info(
-                "Cycle done in %.1fs | regime=%s | MTF=%+d | "
+                "Cycle #%d done in %.1fs | regime=%s | MTF=%+d | "
                 "signal=%s conf=%d | approved=%s tier=%s | next in 300s",
-                elapsed,
+                _cycle_count, elapsed,
                 regime_result.get("regime"),
                 mtf_result.get("confluence_score", 0),
                 orch_result.get("final_signal"),
@@ -592,13 +685,44 @@ async def run_bot() -> None:
                 orch_result.get("position_size_tier"),
             )
 
+            # ── n2) Hourly heartbeat (M5 fix) ─────────────────────
+            if _cycle_count % 12 == 0:  # Every 12 cycles ≈ 1 hour
+                try:
+                    await send_telegram_alert(
+                        f"🤖 *HEARTBEAT* — Cycle #{_cycle_count}\n"
+                        f"BTC: `${market_data.get('close', 0):,.2f}`\n"
+                        f"Open: `{portfolio['open_positions']}`\n"
+                        f"Daily PnL: `${portfolio['daily_pnl']:,.2f}`\n"
+                        f"Balance: `${portfolio['usdt_balance']:,.2f}`"
+                    )
+                except Exception:
+                    pass
+
+            # ── n3) Heavy reconciliation every 20 cycles (C3 fix) ─
+            _reconcile_counter += 1
+            if _reconcile_counter >= 20:
+                _reconcile_counter = 0
+                try:
+                    exchange_orders = await fetch_open_orders(config.SYMBOL, testnet=testnet_flag)
+                    db_open = get_open_trades(db)
+                    if len(db_open) > 0 and len(exchange_orders) == 0:
+                        logger.warning("RECONCILIATION: DB has %d open trades but exchange has 0 open orders. Possible stale trades.", len(db_open))
+                except Exception as e:
+                    logger.warning("Reconciliation check failed: %s", e)
+
             # ── o) Sleep 300s (5-minute candle rhythm) ─────────────
             last_error_str = None
             await asyncio.sleep(300)
 
-        # 6. Clean shutdown on Ctrl+C
+        # 6. Clean shutdown on Ctrl+C (M2 fix)
         except KeyboardInterrupt:
-            print("\nBot stopped cleanly")
+            print("\nBot shutting down — cancelling open orders...")
+            try:
+                from execution.executor import cancel_all_open_orders
+                await cancel_all_open_orders(config.SYMBOL, testnet=testnet_flag)
+            except Exception:
+                pass
+            print("Bot stopped cleanly")
             break
 
         # 7. Unexpected errors -- log, alert, and continue

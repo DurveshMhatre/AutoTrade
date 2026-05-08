@@ -41,87 +41,11 @@ logger.setLevel(logging.INFO)
 
 # =====================================================================
 #  1. LOCAL RULE-BASED SIGNAL GENERATOR
-#     (mirrors the trend agent's system prompt exactly — no API calls)
+#     Import from the canonical trend_agent to avoid code duplication.
+#     This ensures backtest and live bot always use the same rules.
 # =====================================================================
 
-def _local_trend_signal(market_data: dict) -> dict:
-    """Generate a BUY/SELL/HOLD signal using the exact same rules
-    that are embedded in the trend agent's system prompt.
-
-    This avoids burning Claude API credits during backtesting.
-    """
-    trend = market_data.get("trend", "neutral")
-    rsi = market_data.get("rsi") or 50.0
-    macd_hist = market_data.get("macd_hist") or 0.0
-    close = market_data.get("close") or 0.0
-    bb_mid = market_data.get("bb_mid") or 0.0
-    volume = market_data.get("volume") or 0.0
-    volume_sma20 = market_data.get("volume_sma20") or 0.0
-    volume_surge = market_data.get("volume_surge", False)
-    volatility = market_data.get("volatility", "normal")
-
-    signal = "HOLD"
-    reason = "No clear setup"
-    price_vs_bb = "above" if close > bb_mid else "below"
-
-    # ── BUY conditions (ALL must be true) ─────────────────────────
-    buy_conds = [
-        trend == "bullish",
-        42 <= rsi <= 62,
-        macd_hist > 0,
-        close > bb_mid,
-        volume_surge or (volume_sma20 > 0 and volume > volume_sma20),
-    ]
-
-    # ── SELL conditions (ALL must be true) ────────────────────────
-    sell_conds = [
-        trend == "bearish",
-        38 <= rsi <= 58,
-        macd_hist < 0,
-        close < bb_mid,
-    ]
-
-    if all(buy_conds):
-        signal = "BUY"
-        reason = "Bullish trend with confirming momentum and volume"
-    elif all(sell_conds):
-        signal = "SELL"
-        reason = "Bearish trend with confirming momentum"
-
-    # ── Confidence scoring ────────────────────────────────────────
-    confidence = 0.5
-
-    if signal == "BUY" and all(buy_conds):
-        confidence += 0.15
-    elif signal == "SELL" and all(sell_conds):
-        confidence += 0.15
-
-    if 48 <= rsi <= 55:
-        confidence += 0.10
-
-    if volume_surge:
-        confidence += 0.10
-
-    # MACD diverging (strengthening) — histogram magnitude increasing
-    if abs(macd_hist) > 0:
-        confidence += 0.05
-
-    if volatility == "high":
-        confidence -= 0.15
-
-    confidence = round(max(0.0, min(1.0, confidence)), 4)
-
-    return {
-        "signal": signal,
-        "confidence": confidence,
-        "reason": reason,
-        "key_indicators": {
-            "trend": trend,
-            "rsi": round(rsi, 4),
-            "macd_hist": round(macd_hist, 4),
-            "price_vs_bb_mid": price_vs_bb,
-        },
-    }
+from agents.trend_agent import _local_trend_signal
 
 
 # =====================================================================
