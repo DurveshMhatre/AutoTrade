@@ -228,7 +228,7 @@ def _local_orchestrator(
     if veto:
         logger.info(
             "Orchestrator: Phase 1 veto fired — reason=%s",
-            veto["reason"],
+            veto.get("veto_reason", "unknown"),
         )
         return veto
 
