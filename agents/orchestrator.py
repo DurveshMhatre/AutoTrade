@@ -258,18 +258,25 @@ def _local_orchestrator(
     conviction = 50
 
     # ── Conviction boosts/penalties ──────────────────
+    regime = regime_data.get("regime") if regime_data else None
+
     if regime_data:
-        regime = regime_data.get("regime")
         if regime == "STRONG_TREND_UP" and trend == "BUY":
             conviction += 20
         elif regime == "STRONG_TREND_DOWN" and trend == "SELL":
             conviction += 20
         elif regime == "WEAK_TREND_UP" and trend == "BUY":
             conviction += 10
+        elif regime == "RANGING" and trend == "BUY":
+            # Mean reversion BUY in ranging market — give a regime-appropriate boost
+            conviction += 15
 
     if mtf_data:
         score = mtf_data.get("confluence_score", 0)
-        if score >= 3:
+        if regime == "RANGING":
+            # In ranging markets, MTF conflict is expected — don't penalise
+            pass
+        elif score >= 3:
             conviction += 15
         elif score >= 1:
             conviction += 5

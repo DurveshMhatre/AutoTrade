@@ -435,7 +435,8 @@ async def run_bot() -> None:
                 pass
 
             # ── i) Run Trend Agent (Base Signal) ───────────────────
-            signal = run_trend_agent(market_data)
+            current_regime = regime_result.get("regime", "")
+            signal = run_trend_agent(market_data, regime=current_regime)
             logger.info(
                 "Trend signal: %s  confidence=%.2f  reason=%s",
                 signal.get("signal"),

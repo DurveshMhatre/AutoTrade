@@ -225,6 +225,115 @@ def _local_trend_signal(market_data: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# MEAN REVERSION signal generator (for RANGING regime)
+# ---------------------------------------------------------------------------
+def _local_mean_reversion_signal(market_data: dict) -> dict:
+    """Generate a BUY/SELL/HOLD signal using mean reversion logic.
+
+    In ranging markets, trend-following fails because there IS no trend.
+    Instead we:
+      • BUY when price touches the lower Bollinger Band AND RSI is oversold
+      • FLATTEN (sell existing longs) when price touches upper BB AND RSI overbought
+      • HOLD otherwise
+
+    This is the mirror-image of the trend agent — it profits from the range,
+    not from a directional move.
+    """
+    close = market_data.get("close") or 0.0
+    rsi = market_data.get("rsi") or 50.0
+    bb_lower = market_data.get("bb_lower") or 0.0
+    bb_upper = market_data.get("bb_upper") or 0.0
+    bb_mid = market_data.get("bb_mid") or 0.0
+    macd_hist = market_data.get("macd_hist") or 0.0
+    atr = market_data.get("atr") or 0.0
+    volume = market_data.get("volume") or 0.0
+    volume_sma20 = market_data.get("volume_sma20") or 0.0
+    volume_surge = market_data.get("volume_surge", False)
+
+    signal = "HOLD"
+    reason = "No mean reversion setup — price in mid-range"
+    confidence = 0.5
+
+    if bb_lower == 0 or bb_upper == 0 or close == 0:
+        return {
+            "signal": "HOLD",
+            "confidence": 0.3,
+            "reason": "Insufficient data for mean reversion.",
+            "key_indicators": {"trend": "neutral", "rsi": rsi, "macd_hist": 0, "price_vs_bb_mid": "unknown"},
+        }
+
+    bb_range = bb_upper - bb_lower
+    if bb_range <= 0:
+        bb_range = 1.0  # prevent division by zero
+
+    # How close is price to the lower/upper band? (0 = at lower, 1 = at upper)
+    bb_position = (close - bb_lower) / bb_range
+
+    # ── BUY conditions (bounce from support) ──────────────────────
+    # Price in lower 20% of BB range AND RSI shows oversold / bouncing
+    buy_near_lower_bb = bb_position <= 0.25
+    buy_rsi_oversold = rsi <= 38
+    buy_rsi_bouncing = 38 < rsi <= 45 and macd_hist > 0  # RSI recovering + MACD turning
+
+    if buy_near_lower_bb and (buy_rsi_oversold or buy_rsi_bouncing):
+        signal = "BUY"
+        reason = f"Mean reversion BUY: price near lower BB (pos={bb_position:.0%}), RSI={rsi:.0f}"
+        confidence = 0.60
+
+        # Confidence boosts
+        if rsi <= 30:
+            confidence += 0.10  # Deep oversold = stronger bounce expected
+        if buy_rsi_bouncing:
+            confidence += 0.05  # Confirmed momentum turn
+        if volume_surge:
+            confidence += 0.05  # Volume confirms the reversal
+        if bb_position <= 0.10:
+            confidence += 0.05  # Very close to/below lower BB
+
+    # ── SELL/FLATTEN conditions (hit resistance ceiling) ──────────
+    # Price in upper 20% of BB range AND RSI overbought
+    sell_near_upper_bb = bb_position >= 0.75
+    sell_rsi_overbought = rsi >= 65
+
+    if sell_near_upper_bb and sell_rsi_overbought:
+        signal = "SELL"  # Orchestrator will convert to FLATTEN for spot
+        reason = f"Mean reversion SELL: price near upper BB (pos={bb_position:.0%}), RSI={rsi:.0f}"
+        confidence = 0.60
+        if rsi >= 75:
+            confidence += 0.10
+        if bb_position >= 0.90:
+            confidence += 0.05
+
+    # ── Penalty for high volatility (range might be breaking) ─────
+    volatility = market_data.get("volatility", "normal")
+    if volatility == "high":
+        confidence -= 0.10
+
+    confidence = round(max(0.0, min(1.0, confidence)), 4)
+
+    price_vs_bb = "above" if close > bb_mid else "below"
+
+    result = {
+        "signal": signal,
+        "confidence": confidence,
+        "reason": reason,
+        "key_indicators": {
+            "trend": "ranging",
+            "rsi": round(rsi, 4),
+            "macd_hist": round(macd_hist, 4),
+            "price_vs_bb_mid": price_vs_bb,
+            "bb_position": round(bb_position, 4),
+        },
+    }
+
+    logger.info(
+        "Mean reversion signal: %s (confidence %.2f) — %s [BB pos=%.0f%%]",
+        signal, confidence, reason, bb_position * 100,
+    )
+    return result
+
+
+# ---------------------------------------------------------------------------
 # AI-powered trend agent (requires Claude API key)
 # ---------------------------------------------------------------------------
 def _ai_trend_signal(market_data: dict) -> dict:
@@ -277,11 +386,22 @@ def _ai_trend_signal(market_data: dict) -> dict:
 # ---------------------------------------------------------------------------
 # Public entry point — auto-selects local or AI mode
 # ---------------------------------------------------------------------------
-def run_trend_agent(market_data: dict) -> dict:
+def run_trend_agent(market_data: dict, regime: str = "") -> dict:
     """Analyse *market_data* indicators and return a trade signal.
 
-    Automatically uses local rules (FREE) or Claude API based on
-    ``config.USE_AI_AGENTS``.  Falls back to local on any AI failure.
+    Automatically selects the correct strategy:
+      • RANGING regime  → mean reversion rules (buy support, sell resistance)
+      • All other regimes → trend-following rules (EMA crossover + momentum)
+
+    Falls back to local rules on any AI failure.
+
+    Parameters
+    ----------
+    market_data : dict
+        Latest indicator snapshot from ``compute_indicators()``.
+    regime : str
+        Current market regime (e.g. "RANGING", "STRONG_TREND_UP").
+        Determines which signal generator is used.
 
     Returns
     -------
@@ -294,6 +414,11 @@ def run_trend_agent(market_data: dict) -> dict:
         use_ai = getattr(config, "USE_AI_AGENTS", False)
     except Exception:
         use_ai = False
+
+    # Route to the correct strategy based on regime
+    if regime == "RANGING":
+        logger.info("Regime is RANGING — using mean reversion signal generator")
+        return _local_mean_reversion_signal(market_data)
 
     if use_ai:
         return _ai_trend_signal(market_data)
