@@ -159,7 +159,10 @@ def _check_vetoes(
 
     # ── MTF veto ─────────────────────────────────────────────────────
     if mtf_data:
-        if not mtf_data.get("trade_approved", False):
+        regime = regime_data.get("regime", "") if regime_data else ""
+        if regime == "RANGING":
+            pass # Bypass MTF veto for mean reversion
+        elif not mtf_data.get("trade_approved", False):
             blocking = mtf_data.get("blocking_reason", "timeframes_not_aligned")
             score = mtf_data.get("confluence_score", 0)
             return {
