@@ -494,12 +494,14 @@ async def run_bot() -> None:
 
                 if run_bot._blocked_count % 60 == 1:
                     try:
+                        # Escape underscores in reason to prevent Telegram Markdown parse errors
+                        safe_reason = reason.replace("_", " ") if reason else "unknown"
                         await send_telegram_alert(
-                            f"🤖 *BOT ALIVE (ELITE v3)* — Monitoring market\n"
-                            f"Status: `HOLD` (blocked: {reason})\n"
-                            f"BTC: `${market_data.get('close', 0):,.2f}` | Heat: `{portfolio.get('heat_pct', 0):.1f}%`\n"
-                            f"Regime: `{regime_result.get('regime', 'N/A')}` | "
-                            f"MTF: `{mtf_result.get('confluence_score', 0):+d}`"
+                            f"\U0001f916 *BOT ALIVE (ELITE v3)* \u2014 Monitoring market\n"
+                            f"Status: HOLD (blocked: {safe_reason})\n"
+                            f"BTC: ${market_data.get('close', 0):,.2f} | Heat: {portfolio.get('heat_pct', 0):.1f}%\n"
+                            f"Regime: {regime_result.get('regime', 'N/A')} | "
+                            f"MTF: {mtf_result.get('confluence_score', 0):+d}"
                         )
                     except Exception:
                         pass

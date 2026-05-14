@@ -270,36 +270,38 @@ def _local_mean_reversion_signal(market_data: dict) -> dict:
     bb_position = (close - bb_lower) / bb_range
 
     # ── BUY conditions (bounce from support) ──────────────────────
-    # Price in lower 20% of BB range AND RSI shows oversold / bouncing
-    buy_near_lower_bb = bb_position <= 0.25
-    buy_rsi_oversold = rsi <= 38
-    buy_rsi_bouncing = 38 < rsi <= 45 and macd_hist > 0  # RSI recovering + MACD turning
+    # Two entry paths:
+    #   A) Price in lower 40% of BB AND RSI shows weakness (≤ 45)
+    #   B) Price below BB midline AND RSI between 40-50 with MACD turning up
+    buy_near_lower_bb = bb_position <= 0.40
+    buy_rsi_weak = rsi <= 45
+    buy_below_mid_momentum = bb_position < 0.50 and 40 <= rsi <= 50 and macd_hist > 0
 
-    if buy_near_lower_bb and (buy_rsi_oversold or buy_rsi_bouncing):
+    if (buy_near_lower_bb and buy_rsi_weak) or buy_below_mid_momentum:
         signal = "BUY"
-        reason = f"Mean reversion BUY: price near lower BB (pos={bb_position:.0%}), RSI={rsi:.0f}"
-        confidence = 0.60
+        reason = f"Mean reversion BUY: price in lower BB zone (pos={bb_position:.0%}), RSI={rsi:.0f}"
+        confidence = 0.62
 
         # Confidence boosts
-        if rsi <= 30:
+        if rsi <= 35:
             confidence += 0.10  # Deep oversold = stronger bounce expected
-        if buy_rsi_bouncing:
+        if rsi <= 40 and macd_hist > 0:
             confidence += 0.05  # Confirmed momentum turn
         if volume_surge:
             confidence += 0.05  # Volume confirms the reversal
-        if bb_position <= 0.10:
+        if bb_position <= 0.15:
             confidence += 0.05  # Very close to/below lower BB
 
     # ── SELL/FLATTEN conditions (hit resistance ceiling) ──────────
-    # Price in upper 20% of BB range AND RSI overbought
-    sell_near_upper_bb = bb_position >= 0.75
-    sell_rsi_overbought = rsi >= 65
+    # Price in upper 30% of BB range AND RSI elevated
+    sell_near_upper_bb = bb_position >= 0.70
+    sell_rsi_overbought = rsi >= 60
 
     if sell_near_upper_bb and sell_rsi_overbought:
         signal = "SELL"  # Orchestrator will convert to FLATTEN for spot
         reason = f"Mean reversion SELL: price near upper BB (pos={bb_position:.0%}), RSI={rsi:.0f}"
-        confidence = 0.60
-        if rsi >= 75:
+        confidence = 0.62
+        if rsi >= 70:
             confidence += 0.10
         if bb_position >= 0.90:
             confidence += 0.05
