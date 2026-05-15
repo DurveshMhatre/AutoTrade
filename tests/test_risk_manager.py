@@ -131,12 +131,14 @@ class TestHardBlocks:
         assert result["reason"] == "insufficient_balance"
 
     def test_blocks_high_volatility_low_confidence(self):
-        """High volatility + confidence < 0.75 → rejected."""
+        """High volatility + confidence < 0.55 → rejected."""
         market = _default_market_data()
         market["volatility"] = "high"
-        signal = _buy_signal(confidence=0.70)
+        signal = _buy_signal(confidence=0.52)
+        config = _default_config()
+        config["MIN_CONFIDENCE"] = 0.50  # Pass confidence check but fail volatility
         result = evaluate_trade(
-            signal, _default_portfolio(), market, _default_config()
+            signal, _default_portfolio(), market, config
         )
         assert result["approved"] is False
         assert result["reason"] == "high_volatility"

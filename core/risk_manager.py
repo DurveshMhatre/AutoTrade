@@ -184,13 +184,13 @@ def evaluate_trade(
         )
         return _rejected("insufficient_balance")
 
-    # 6. High volatility with mediocre confidence
+    # 6. High volatility with very low confidence
     if (
         market_data.get("volatility") == "high"
-        and signal.get("confidence", 0.0) < 0.75
+        and signal.get("confidence", 0.0) < 0.55
     ):
         logger.info(
-            "Risk block: high volatility + confidence %.2f < 0.75",
+            "Risk block: high volatility + confidence %.2f < 0.55",
             signal.get("confidence", 0.0),
         )
         return _rejected("high_volatility")
