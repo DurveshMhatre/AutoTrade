@@ -554,10 +554,10 @@ async def run_bot() -> None:
                 logger.info("Risk manager blocked: %s", risk_check.get("reason"))
                 await asyncio.sleep(60)
                 continue
-            # Compute stats from trade history (last 30 closed trades)
+            # Compute stats from trade history (last 20 closed trades)
             from core.database import get_recent_trades
             closed_trades = [t for t in get_recent_trades(db, limit=50) if t.get("status") == "closed"]
-            if len(closed_trades) >= 10:
+            if len(closed_trades) >= 20:
                 wins = [t for t in closed_trades if t.get("pnl", 0) > 0]
                 losses = [t for t in closed_trades if t.get("pnl", 0) <= 0]
                 hist_win_rate = len(wins) / len(closed_trades)
@@ -581,21 +581,36 @@ async def run_bot() -> None:
                 sentiment_adj=0.0
             )
             
+            # ── Hybrid Sizing: RISK_PER_TRADE as floor, Kelly as scaler ──
+            # This prevents the bot from going to zero when Kelly shows no edge
+            # (e.g. due to early bad trades poisoning the win rate).
+            # Standard risk-based position: RISK_PER_TRADE_PCT of balance
+            base_risk_usd = portfolio["usdt_balance"] * config.RISK_PER_TRADE_PCT  # 2% of balance
+            
+            # If Kelly shows an edge, use Kelly. Otherwise, use the base risk amount.
+            if kelly_result["position_usd"] > 0:
+                kelly_usd = kelly_result["position_usd"]
+            else:
+                kelly_usd = base_risk_usd
+                logger.info("Kelly shows no edge (%.1f%%) — using base risk sizing: $%.2f",
+                           kelly_result["kelly_raw"] * 100, base_risk_usd)
+
             # Apply Tier from Master Orchestrator
             _TIER_MAP = {"full": 1.0, "100": 1.0, "75": 0.75, "50": 0.50}
             tier_raw = str(orch_result.get("position_size_tier", "50")).lower()
             tier_multiplier = _TIER_MAP.get(tier_raw, 0.50)
-            kelly_usd = kelly_result["position_usd"] * tier_multiplier
+            kelly_usd = kelly_usd * tier_multiplier
             
-            # Safety check vs balance
-            kelly_usd = min(kelly_usd, portfolio["usdt_balance"])
+            # Safety check vs balance (never risk more than 3%)
+            kelly_usd = min(kelly_usd, portfolio["usdt_balance"] * 0.03)
             
             # Calculate quantity and entry levels
             entry_price = market_data.get("close", 0)
             atr = market_data.get("atr", entry_price * 0.02)
-            qty = kelly_usd / entry_price
+            qty = kelly_usd / entry_price if entry_price > 0 else 0
             
-            logger.info("Kelly Sizing: %s | Final Size = %.6f BTC ($%.2f)", kelly_result["reasoning"], qty, kelly_usd)
+            logger.info("Kelly Sizing: %s | Base Risk=$%.2f | Final Size = %.6f BTC ($%.2f)",
+                        kelly_result["reasoning"], base_risk_usd, qty, kelly_usd)
 
             # Minimum check
             if qty < 0.0001:
