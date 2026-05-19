@@ -121,11 +121,14 @@ def _check_vetoes(
     mtf_data: dict | None = None,
     sentiment_data: dict | None = None,
     news_data: dict | None = None,
+    active_strategy: dict | None = None,
 ) -> dict | None:
     """Run all veto checks from the intelligence layer.
     If ANY check fails, return an early rejection payload.
     If ALL pass, return None.
     """
+    strategy_type = active_strategy.get("type", "TREND_FOLLOWING") if active_strategy else "TREND_FOLLOWING"
+
     # ── Regime veto ─────────────────────────────────────────────────
     if regime_data:
         regime = regime_data.get("regime", "")
@@ -157,11 +160,11 @@ def _check_vetoes(
                 "summary": "Trade vetoed: capitulation detected."
             }
 
-    # ── MTF veto ─────────────────────────────────────────────────────
+    # ── MTF veto — STRATEGY-AWARE (Bug 1 fix) ────────────────────────
     if mtf_data:
-        regime = regime_data.get("regime", "") if regime_data else ""
-        if regime == "RANGING":
-            pass # Bypass MTF veto for mean reversion
+        if strategy_type == "MEAN_REVERSION":
+            # For mean-reversion (RANGING), MTF divergence is EXPECTED and ACCEPTABLE
+            logger.info("MTF veto: skipped (MEAN_REVERSION strategy)")
         elif not mtf_data.get("trade_approved", False):
             blocking = mtf_data.get("blocking_reason", "timeframes_not_aligned")
             score = mtf_data.get("confluence_score", 0)
@@ -222,12 +225,24 @@ def _local_orchestrator(
     system prompt, implemented as deterministic Python logic.
 
     Enhanced with Phase 1 & 2 intelligence veto checks and confidence scoring.
+    Strategy-aware conviction thresholds and MTF veto bypass (Bug 1 + Bug 4 fix).
     This is 100% FREE — no API calls needed.
     """
     global _squeeze_block_count
 
-    # ── Phase 1 & 2 veto checks (if data provided) ─────────────────────
-    veto = _check_vetoes(regime_data, mtf_data, sentiment_data, news_data)
+    strategy_type = active_strategy.get("type", "TREND_FOLLOWING") if active_strategy else "TREND_FOLLOWING"
+
+    # ── Strategy-aware conviction thresholds (Bug 4 fix) ──────────────
+    CONVICTION_THRESHOLDS = {
+        "TREND_FOLLOWING": 65,    # High bar — need strong alignment
+        "MEAN_REVERSION": 55,    # Lower bar — fewer confirmations needed
+        "CAPITULATION_BOUNCE": 60,
+        "FLAT": 999,             # Never trade
+    }
+    min_conviction = CONVICTION_THRESHOLDS.get(strategy_type, 65)
+
+    # ── Phase 1 & 2 veto checks (strategy-aware) ─────────────────────
+    veto = _check_vetoes(regime_data, mtf_data, sentiment_data, news_data, active_strategy)
     if veto:
         logger.info(
             "Orchestrator: Phase 1 veto fired — reason=%s",
@@ -274,17 +289,54 @@ def _local_orchestrator(
             # Mean reversion BUY in ranging market — give a regime-appropriate boost
             conviction += 15
 
+    # ── MTF scoring — STRATEGY-AWARE (Bug 4 fix) ───────────────────
     if mtf_data:
-        score = mtf_data.get("confluence_score", 0)
-        if regime == "RANGING":
-            # In ranging markets, MTF conflict is expected — don't penalise
-            pass
-        elif score >= 3:
-            conviction += 15
-        elif score >= 1:
+        if strategy_type != "MEAN_REVERSION":
+            # Standard MTF scoring for trend following
+            score = mtf_data.get("confluence_score", 0)
+            if score >= 3:
+                conviction += 15
+            elif score >= 1:
+                conviction += 5
+            elif score < 0:
+                conviction -= 15  # Trading against higher timeframe
+        else:
+            # For mean reversion: MTF divergence = EXPECTED, do NOT penalize
+            # Instead, check that daily is NOT strongly trending in opposite direction
+            daily_bias = mtf_data.get("daily_bias", "neutral")
+            final_signal_type = trend_data.get("signal", "HOLD") if trend_data else "HOLD"
+
+            if final_signal_type == "BUY" and daily_bias == "bear":
+                conviction -= 10  # Slight penalty — mean reversion against daily trend
+            elif final_signal_type == "SELL" and daily_bias == "bull":
+                conviction -= 10
+            else:
+                conviction += 5   # Neutral daily = fine for mean reversion
+
+    # ── Mean-reversion specific boosts (Bug 4 fix) ─────────────────
+    if strategy_type == "MEAN_REVERSION":
+        # Use the signal from mean_reversion_agent if available
+        mr_signal = trend_data  # In ranging mode, trend_data IS the mean_reversion signal
+
+        # S&R distance boost (the closer to S&R, the better)
+        dist_to_sr = mr_signal.get("distance_to_sr_pct", 999) if mr_signal else 999
+        if dist_to_sr < 0.2:
+            conviction += 15  # Excellent — right at the level
+        elif dist_to_sr < 0.4:
+            conviction += 10  # Good
+        elif dist_to_sr < 0.8:
+            conviction += 5   # Fair
+        else:
+            conviction -= 20  # Too far from S&R — not a mean reversion setup
+
+        # R:R quality boost
+        rr = mr_signal.get("rr_ratio", 0) if mr_signal else 0
+        if rr >= 2.5:
+            conviction += 10
+        elif rr >= 1.5:
             conviction += 5
-        elif score < 0:
-            conviction -= 15 # Trading against higher timeframe
+        else:
+            conviction -= 15  # Bad R:R — never trade mean reversion with R:R < 1.5
 
     if sr_data:
         entry_qual = sr_data.get("entry_quality")
@@ -332,8 +384,27 @@ def _local_orchestrator(
             "summary": f"Conviction too low ({conviction})."
         }
 
+    # ── Apply strategy-aware minimum conviction (Bug 4 fix) ────────
+    trade_approved = conviction >= min_conviction
+    if not trade_approved:
+        logger.info(
+            "Conviction: %d (min=%d for %s) → approved=%s",
+            conviction, min_conviction, strategy_type, trade_approved
+        )
+        return {
+            "trade_approved": False,
+            "conviction_score": conviction,
+            "veto_reason": f"conviction_below_{strategy_type}_minimum",
+            "final_signal": "FLAT",
+            "position_size_tier": "50",
+            "summary": f"Conviction {conviction} below {min_conviction} for {strategy_type}."
+        }
+
     summary = f"Approved {trend} with {conviction} conviction."
-    logger.info(summary)
+    logger.info(
+        "Conviction: %d (min=%d for %s) → approved=%s",
+        conviction, min_conviction, strategy_type, trade_approved
+    )
 
     return {
         "trade_approved": True,
@@ -364,8 +435,8 @@ def _ai_orchestrator(
     try:
         import anthropic
 
-        # ── Phase 1 & 2 veto checks (if data provided) ─────────────────────
-        veto = _check_vetoes(regime_data, mtf_data, sentiment_data, news_data)
+        # ── Phase 1 & 2 veto checks — strategy-aware (Bug 1 fix) ──────────
+        veto = _check_vetoes(regime_data, mtf_data, sentiment_data, news_data, active_strategy)
         if veto:
             return veto
 

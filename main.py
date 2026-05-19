@@ -47,6 +47,7 @@ from agents.sr_agent import run_sr_agent
 from agents.order_flow_agent import run_order_flow_agent
 from agents.news_agent import run_news_agent
 from agents.autopsy_agent import run_autopsy_agent
+from agents.mean_reversion_agent import run_mean_reversion_agent
 
 # ── Execution ───────────────────────────────────────────────────────
 from execution.executor import place_order, smart_entry, check_order_status, fetch_open_orders
@@ -239,6 +240,27 @@ async def run_bot() -> None:
     _cycle_count = 0
     _reconcile_counter = 0
 
+    # ── Agent result cache — avoid calling Claude on every cycle for slow-changing data ──
+    _agent_cache = {
+        "regime": {"result": None, "last_cycle": 0},
+        "mtf": {"result": None, "last_cycle": 0},
+        "sentiment": {"result": None, "last_cycle": 0},
+        "sr": {"result": None, "last_cycle": 0},
+        "news": {"result": None, "last_cycle": 0},
+    }
+
+    def _should_refresh(agent_name: str, current_cycle: int) -> bool:
+        interval = config.AGENT_REFRESH_CYCLES.get(agent_name, 1)
+        last = _agent_cache[agent_name]["last_cycle"]
+        return (current_cycle - last) >= interval
+
+    def _get_cached(agent_name: str):
+        return _agent_cache[agent_name]["result"]
+
+    def _set_cached(agent_name: str, result, cycle: int):
+        _agent_cache[agent_name]["result"] = result
+        _agent_cache[agent_name]["last_cycle"] = cycle
+
     # 4. Startup banner
     print("=" * 60)
     print(f"=== CRYPTO BOT STARTED (ELITE v1) === Testnet: {testnet_flag}")
@@ -321,15 +343,20 @@ async def run_bot() -> None:
                     mtf_indicators[tf] = {}
                     logger.warning("  %s: no data available", tf.upper())
 
-            # ── e) Run Regime Agent — Phase 1 ──────────────────────
-            regime_result = run_regime_agent(mtf_indicators)
-            logger.info(
-                "Regime: %s (conf=%.2f, bias=%s, multiplier=%.2f)",
-                regime_result.get("regime"),
-                regime_result.get("confidence", 0),
-                regime_result.get("strategy_bias"),
-                regime_result.get("position_size_multiplier", 0),
-            )
+            # ── e) Run Regime Agent — Phase 1 (CACHED) ─────────────
+            if _should_refresh("regime", _cycle_count) or _get_cached("regime") is None:
+                regime_result = run_regime_agent(mtf_indicators)
+                _set_cached("regime", regime_result, _cycle_count)
+                logger.info(
+                    "Regime refreshed: %s (conf=%.2f, bias=%s, multiplier=%.2f)",
+                    regime_result.get("regime"),
+                    regime_result.get("confidence", 0),
+                    regime_result.get("strategy_bias"),
+                    regime_result.get("position_size_multiplier", 0),
+                )
+            else:
+                regime_result = _get_cached("regime")
+                logger.info("Regime (cached): %s", regime_result.get("regime"))
             
             # ── e.1) Strategy Switching — Phase 4 ──────────────────
             # Map regime agent's strategy_bias output to STRATEGIES keys
@@ -365,26 +392,36 @@ async def run_bot() -> None:
             # ── e.5) Sync portfolio & check trailing stops ─────────
             await sync_portfolio(db, market_data, portfolio, testnet_flag, regime_result.get("regime", "default"))
 
-            # ── f) Run MTF Confluence Agent — Phase 1 ──────────────
-            mtf_result = run_mtf_agent(mtf_indicators)
-            logger.info(
-                "MTF: score=%+d  daily=%s  4H=%s  approved=%s",
-                mtf_result.get("confluence_score", 0),
-                mtf_result.get("daily_bias"),
-                mtf_result.get("4h_structure"),
-                mtf_result.get("trade_approved"),
-            )
+            # ── f) Run MTF Confluence Agent — Phase 1 (CACHED) ────
+            if _should_refresh("mtf", _cycle_count) or _get_cached("mtf") is None:
+                mtf_result = run_mtf_agent(mtf_indicators)
+                _set_cached("mtf", mtf_result, _cycle_count)
+                logger.info(
+                    "MTF refreshed: score=%+d  daily=%s  4H=%s  approved=%s",
+                    mtf_result.get("confluence_score", 0),
+                    mtf_result.get("daily_bias"),
+                    mtf_result.get("4h_structure"),
+                    mtf_result.get("trade_approved"),
+                )
+            else:
+                mtf_result = _get_cached("mtf")
+                logger.info("MTF (cached): score=%+d", mtf_result.get("confluence_score", 0))
 
-            # ── g) Run Sentiment Agent — Phase 1 ───────────────────
-            sentiment_result = await run_sentiment_agent()
-            logger.info(
-                "Sentiment: F&G=%d(%s)  funding=%s  combined=%+d  bias=%s",
-                sentiment_result.get("fear_greed_score", 50),
-                sentiment_result.get("fear_greed_label"),
-                sentiment_result.get("funding_signal"),
-                sentiment_result.get("combined_sentiment", 0),
-                sentiment_result.get("trade_bias_adjustment"),
-            )
+            # ── g) Run Sentiment Agent — Phase 1 (CACHED) ─────────
+            if _should_refresh("sentiment", _cycle_count) or _get_cached("sentiment") is None:
+                sentiment_result = await run_sentiment_agent()
+                _set_cached("sentiment", sentiment_result, _cycle_count)
+                logger.info(
+                    "Sentiment refreshed: F&G=%d(%s)  funding=%s  combined=%+d  bias=%s",
+                    sentiment_result.get("fear_greed_score", 50),
+                    sentiment_result.get("fear_greed_label"),
+                    sentiment_result.get("funding_signal"),
+                    sentiment_result.get("combined_sentiment", 0),
+                    sentiment_result.get("trade_bias_adjustment"),
+                )
+            else:
+                sentiment_result = _get_cached("sentiment")
+                logger.info("Sentiment (cached): combined=%+d", sentiment_result.get("combined_sentiment", 0))
 
             # ── g.1) Fetch Phase 2 Data ────────────────────────────
             logger.info("Fetching order book and news data...")
@@ -408,15 +445,25 @@ async def run_bot() -> None:
                 except Exception as e:
                     logger.warning("News fetch failed: %s", e)
 
-            # ── g.2) Run Phase 2 Agents ────────────────────────────
-            sr_result = run_sr_agent(mtf_candles.get("1h", candles), market_data.get("close", 0))
-            logger.info("S&R: Supp=$%.2f  Res=$%.2f  Quality=%s", sr_result.get("nearest_support", 0), sr_result.get("nearest_resistance", 0), sr_result.get("entry_quality"))
+            # ── g.2) Run Phase 2 Agents (S&R and News CACHED) ─────
+            if _should_refresh("sr", _cycle_count) or _get_cached("sr") is None:
+                sr_result = run_sr_agent(mtf_candles.get("1h", candles), market_data.get("close", 0))
+                _set_cached("sr", sr_result, _cycle_count)
+                logger.info("S&R refreshed: Supp=$%.2f  Res=$%.2f  Quality=%s", sr_result.get("nearest_support", 0), sr_result.get("nearest_resistance", 0), sr_result.get("entry_quality"))
+            else:
+                sr_result = _get_cached("sr")
+                logger.info("S&R (cached): Supp=$%.2f  Res=$%.2f", sr_result.get("nearest_support", 0), sr_result.get("nearest_resistance", 0))
 
             order_flow_result = run_order_flow_agent(order_book, vwap_data, market_data.get("close", 0))
             logger.info("Order Flow: Bias=%s  B/A Ratio=%.2f  VWAP=$%.2f", order_flow_result.get("order_flow_bias"), order_flow_result.get("bid_ask_ratio"), vwap_data.get("vwap", 0))
 
-            news_result = run_news_agent(headlines)
-            logger.info("News: Action=%s  Score=%.2f  MajorEvent=%s", news_result.get("trading_action"), news_result.get("weighted_sentiment_score", 0), news_result.get("major_event_detected"))
+            if _should_refresh("news", _cycle_count) or _get_cached("news") is None:
+                news_result = run_news_agent(headlines)
+                _set_cached("news", news_result, _cycle_count)
+                logger.info("News refreshed: Action=%s  Score=%.2f  MajorEvent=%s", news_result.get("trading_action"), news_result.get("weighted_sentiment_score", 0), news_result.get("major_event_detected"))
+            else:
+                news_result = _get_cached("news")
+                logger.info("News (cached): Action=%s", news_result.get("trading_action"))
 
             # ── h) Save regime snapshot to DB ──────────────────────
             try:
@@ -434,15 +481,25 @@ async def run_bot() -> None:
             except Exception:
                 pass
 
-            # ── i) Run Trend Agent (Base Signal) ───────────────────
+            # ── i) Run Signal Agent — route to correct agent ────────
             current_regime = regime_result.get("regime", "")
-            signal = run_trend_agent(market_data, regime=current_regime)
-            logger.info(
-                "Trend signal: %s  confidence=%.2f  reason=%s",
-                signal.get("signal"),
-                signal.get("confidence", 0),
-                signal.get("reason"),
-            )
+            strategy_type = active_strategy.get("type", "TREND_FOLLOWING")
+
+            if strategy_type == "MEAN_REVERSION":
+                signal = run_mean_reversion_agent(market_data, sr_result, regime=current_regime)
+                logger.info(
+                    "Mean Reversion signal: %s conf=%.2f dist_sr=%.2f%% R:R=%.2f",
+                    signal.get("signal"), signal.get("confidence", 0),
+                    signal.get("distance_to_sr_pct", 999), signal.get("rr_ratio", 0),
+                )
+            else:
+                signal = run_trend_agent(market_data, regime=current_regime)
+                logger.info(
+                    "Trend signal: %s  confidence=%.2f  reason=%s",
+                    signal.get("signal"),
+                    signal.get("confidence", 0),
+                    signal.get("reason"),
+                )
 
             # ── j) Master Orchestrator gate ─────────────────────────
             # Pass the active_strategy dict into the orchestrator so it knows our risk limits
@@ -581,9 +638,7 @@ async def run_bot() -> None:
                 sentiment_adj=0.0
             )
             
-            # ── Hybrid Sizing: RISK_PER_TRADE as floor, Kelly as scaler ──
-            # This prevents the bot from going to zero when Kelly shows no edge
-            # (e.g. due to early bad trades poisoning the win rate).
+            # ── Hybrid Sizing: Risk-Based Floor + Kelly Scaler (Bug 2 fix) ──
             # Standard risk-based position: RISK_PER_TRADE_PCT of balance
             base_risk_usd = portfolio["usdt_balance"] * config.RISK_PER_TRADE_PCT  # 2% of balance
             
@@ -595,28 +650,53 @@ async def run_bot() -> None:
                 logger.info("Kelly shows no edge (%.1f%%) — using base risk sizing: $%.2f",
                            kelly_result["kelly_raw"] * 100, base_risk_usd)
 
+            # Calculate entry levels
+            entry_price = market_data.get("close", 0)
+            atr = market_data.get("atr", entry_price * 0.02)
+
+            # Method 1: Risk-based sizing (preferred)
+            # Risk $20 per trade with 1.5% stop = $20 / (price * 0.015) BTC
+            risk_usd = max(portfolio["usdt_balance"] * config.RISK_PER_TRADE_PCT, config.TARGET_RISK_PER_TRADE_USD)
+            sl_distance_pct = config.STOP_LOSS_PCT  # 0.015
+            sl_distance_usd = entry_price * sl_distance_pct
+            risk_based_qty = risk_usd / sl_distance_usd if sl_distance_usd > 0 else 0
+
+            # Method 2: Kelly-adjusted sizing
+            kelly_qty = kelly_usd / entry_price if entry_price > 0 else 0
+
+            # Take the LARGER of risk-based and kelly, to ensure fees are beatable
+            qty = max(risk_based_qty, kelly_qty)
+
             # Apply Tier from Master Orchestrator
             _TIER_MAP = {"full": 1.0, "100": 1.0, "75": 0.75, "50": 0.50}
             tier_raw = str(orch_result.get("position_size_tier", "50")).lower()
             tier_multiplier = _TIER_MAP.get(tier_raw, 0.50)
-            kelly_usd = kelly_usd * tier_multiplier
-            
-            # Safety check vs balance (never risk more than 3%)
-            kelly_usd = min(kelly_usd, portfolio["usdt_balance"] * 0.03)
-            
-            # Calculate quantity and entry levels
-            entry_price = market_data.get("close", 0)
-            atr = market_data.get("atr", entry_price * 0.02)
-            qty = kelly_usd / entry_price if entry_price > 0 else 0
-            
-            logger.info("Kelly Sizing: %s | Base Risk=$%.2f | Final Size = %.6f BTC ($%.2f)",
-                        kelly_result["reasoning"], base_risk_usd, qty, kelly_usd)
+            qty = qty * tier_multiplier
 
-            # Minimum check
-            if qty < 0.0001:
-                logger.info("Quantity too small for Binance (%.6f < 0.0001). Skipping.", qty)
-                await asyncio.sleep(60)
-                continue
+            # Hard caps — never more than 3% of balance
+            qty = min(qty, portfolio["usdt_balance"] * 0.03 / entry_price)
+
+            # ABSOLUTE MINIMUM: 0.001 BTC — below this, fees destroy every trade
+            ABSOLUTE_MIN_BTC = max(config.MIN_POSITION_BTC, config.MIN_POSITION_USD / entry_price)
+            if qty < ABSOLUTE_MIN_BTC:
+                logger.info(
+                    "Position size $%.2f (%.6f BTC) below viable minimum $%.2f (%.6f BTC). "
+                    "Increasing to minimum to cover fees.",
+                    qty * entry_price, qty, ABSOLUTE_MIN_BTC * entry_price, ABSOLUTE_MIN_BTC
+                )
+                # Only trade if balance supports the minimum
+                if portfolio["usdt_balance"] >= ABSOLUTE_MIN_BTC * entry_price * 1.1:
+                    qty = ABSOLUTE_MIN_BTC
+                else:
+                    logger.info("Balance too low for minimum position. Skipping.")
+                    await asyncio.sleep(60)
+                    continue
+
+            logger.info(
+                "Final sizing: risk_based=%.6f kelly=%.6f final=%.6f BTC ($%.2f) tier=%s",
+                risk_based_qty, kelly_qty, qty, qty * entry_price,
+                orch_result.get("position_size_tier", "50")
+            )
 
             # ── m) Smart Tiered Execution ─────────────────────────
             side = orch_result["final_signal"].lower()
@@ -658,6 +738,30 @@ async def run_bot() -> None:
                         "take_profit": 0,
                     }
                     save_trade(db, trade_record)
+
+                    # ── Create TrailingStopManager with SR overrides for RANGING ──
+                    trade_id_new = None
+                    try:
+                        open_trades_now = get_open_trades(db)
+                        if open_trades_now:
+                            trade_id_new = open_trades_now[-1]["id"]
+                    except Exception:
+                        pass
+
+                    if trade_id_new:
+                        if strategy_type == "MEAN_REVERSION" and signal.get("suggested_sl"):
+                            _active_trade_managers[trade_id_new] = TrailingStopManager(
+                                entry_price=avg_fill_price,
+                                side=side,
+                                atr=atr,
+                                regime=current_regime,
+                                tp_override=signal.get("suggested_tp"),
+                                sl_override=signal.get("suggested_sl")
+                            )
+                        else:
+                            _active_trade_managers[trade_id_new] = TrailingStopManager(
+                                entry_price=avg_fill_price, side=side, atr=atr, regime=current_regime
+                            )
 
                     # Save agent decision
                     decision_record = {
