@@ -1,3 +1,14 @@
+---
+title: AutoTrade Bot Dashboard
+emoji: 📈
+colorFrom: blue
+colorTo: green
+sdk: gradio
+sdk_version: 5.20.0
+app_file: app.py
+pinned: false
+---
+
 # Automated Trading Bot
 
 > **CONFIDENTIAL & PROPRIETARY — DURVESH DEVELOPMENTS**
