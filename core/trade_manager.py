@@ -50,7 +50,7 @@ class TrailingStopManager:
 
         else:
             # ── Standard trending mode (existing logic unchanged) ─────
-            self.initial_stop = self._compute_stop(entry_price, atr, regime)
+            self.initial_stop = sl_override if sl_override is not None else self._compute_stop(entry_price, atr, regime)
 
             # R = distance from entry to stop
             self.R = abs(entry_price - self.initial_stop)

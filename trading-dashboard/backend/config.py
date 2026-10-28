@@ -14,7 +14,10 @@ load_dotenv()
 # Points to the trading bot's SQLite database (read-only access)
 DB_PATH = os.getenv(
     "DB_PATH",
-    str(Path(__file__).resolve().parent.parent.parent / "trading_bot.db"),
+    str(Path(__file__).resolve().parent.parent.parent / (
+        'trading_bot_paper.db' if os.getenv('DRY_RUN','true').lower() == 'true'
+        else 'trading_bot_testnet.db' if os.getenv('BINANCE_TESTNET','true').lower() == 'true'
+        else 'trading_bot_live.db')),
 )
 
 # ── CORS ────────────────────────────────────────────────────────────

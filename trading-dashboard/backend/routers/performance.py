@@ -17,13 +17,25 @@ from backend.services.analytics import (
 router = APIRouter(tags=["performance"])
 
 
+def _bot_status():
+    import json
+    import time
+    heartbeat = fetch_scalar("SELECT value FROM runtime_state WHERE key='heartbeat'")
+    return 'running' if heartbeat and time.time() - float(json.loads(heartbeat)) < 60 else 'stale'
+
+
+
 @router.get("/performance/equity-curve")
 async def get_equity_curve(days: int = Query(30, ge=1, le=365)):
     """Daily equity curve with cumulative P&L (computed via analytics service)."""
     trades = fetch_all(
-        "SELECT * FROM trades WHERE pnl IS NOT NULL ORDER BY timestamp ASC"
+        "SELECT * FROM trades WHERE status = 'closed' ORDER BY timestamp ASC"
     )
-    curve = compute_equity_curve(trades, starting_equity=1000.0)
+    import json
+    initial = fetch_scalar("SELECT value FROM runtime_state WHERE key='initial_balance'")
+    starting_equity = float(json.loads(initial)) if initial else 0.0
+    events = fetch_all("SELECT timestamp, realized_pnl AS pnl FROM cash_events ORDER BY timestamp")
+    curve = compute_equity_curve(events, starting_equity=starting_equity)
 
     # Limit to the last N days
     return curve[-days:] if len(curve) > days else curve
@@ -66,7 +78,7 @@ async def get_dashboard_metrics():
         "open_positions": positions,
         "equity_curve": equity_curve,
         "last_agent_decision": last_decision,
-        "bot_status": "running",
+        "bot_status": _bot_status(),
         "current_btc_price": btc_price,
     }
 
@@ -75,7 +87,7 @@ async def get_dashboard_metrics():
 async def get_hourly_breakdown():
     """Average P&L and trade count by hour of day (via analytics service)."""
     trades = fetch_all(
-        "SELECT * FROM trades WHERE pnl IS NOT NULL"
+        "SELECT * FROM trades WHERE status = 'closed'"
     )
     return compute_hourly_breakdown(trades)
 
@@ -85,11 +97,11 @@ async def get_win_rate_trend():
     """Daily win rate for last 30 days."""
     rows = fetch_all(
         """
-        SELECT date(timestamp/1000, 'unixepoch') as date,
+        SELECT date(CASE WHEN timestamp > 100000000000 THEN timestamp/1000 ELSE timestamp END, 'unixepoch') as date,
                COUNT(*) as trades,
                SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins
         FROM trades
-        WHERE pnl IS NOT NULL
+        WHERE status = 'closed'
         GROUP BY date
         ORDER BY date DESC
         LIMIT 30
@@ -110,7 +122,7 @@ async def get_win_rate_trend():
 async def get_sharpe_ratio():
     """Annualised Sharpe ratio from trade history."""
     trades = fetch_all(
-        "SELECT * FROM trades WHERE pnl IS NOT NULL ORDER BY timestamp ASC"
+        "SELECT * FROM trades WHERE status = 'closed' ORDER BY timestamp ASC"
     )
     sharpe = compute_sharpe_ratio(trades)
     return {"sharpe_ratio": sharpe}
@@ -120,7 +132,7 @@ async def get_sharpe_ratio():
 async def get_max_drawdown():
     """Maximum drawdown in dollars and percentage."""
     trades = fetch_all(
-        "SELECT * FROM trades WHERE pnl IS NOT NULL ORDER BY timestamp ASC"
+        "SELECT * FROM trades WHERE status = 'closed' ORDER BY timestamp ASC"
     )
     return compute_max_drawdown(trades)
 
@@ -129,7 +141,7 @@ async def get_max_drawdown():
 async def get_win_streaks():
     """Current and maximum win/loss streaks."""
     trades = fetch_all(
-        "SELECT * FROM trades WHERE pnl IS NOT NULL ORDER BY timestamp ASC"
+        "SELECT * FROM trades WHERE status = 'closed' ORDER BY timestamp ASC"
     )
     return compute_win_streak(trades)
 
@@ -138,6 +150,6 @@ async def get_win_streaks():
 async def get_pnl_distribution():
     """P&L distribution histogram in $5 buckets."""
     trades = fetch_all(
-        "SELECT * FROM trades WHERE pnl IS NOT NULL"
+        "SELECT * FROM trades WHERE status = 'closed'"
     )
     return compute_pnl_distribution(trades, bucket_size=5.0)

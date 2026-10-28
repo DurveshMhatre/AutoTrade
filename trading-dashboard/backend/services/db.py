@@ -9,12 +9,26 @@ Uses PRAGMA query_only=ON as an extra safety layer.
 
 import sqlite3
 import logging
+from pathlib import Path
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
 from backend.config import DB_PATH
 
 logger = logging.getLogger(__name__)
+
+
+def normalize_row(row):
+    """Bot stores epoch seconds; dashboard charts use milliseconds."""
+    result = dict(row)
+    if result.get('status') == 'closed' and result.get('closed_at'):
+        result['timestamp'] = result['closed_at']
+    timestamp = result.get('timestamp')
+    if isinstance(timestamp, (int,float)) and timestamp < 100_000_000_000:
+        result['timestamp'] = int(timestamp * 1000)
+    if result.get('status') == 'closed' and result.get('initial_quantity') is not None:
+        result['quantity'] = result['initial_quantity']
+    return result
 
 
 def get_connection() -> sqlite3.Connection:
@@ -27,7 +41,8 @@ def get_connection() -> sqlite3.Connection:
         Returns None if the database is unavailable.
     """
     try:
-        conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=10)
+        conn = sqlite3.connect(Path(DB_PATH).resolve().as_uri() + '?mode=ro', uri=True,
+                               check_same_thread=False, timeout=10)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA query_only=ON")
         return conn
@@ -70,7 +85,7 @@ def fetch_all(query: str, params: tuple = ()) -> list[dict]:
             return []
         try:
             cursor = conn.execute(query, params)
-            return [dict(row) for row in cursor.fetchall()]
+            return [normalize_row(row) for row in cursor.fetchall()]
         except sqlite3.Error as exc:
             logger.error("DB query error: %s | query: %s", exc, query[:100])
             return []
@@ -84,7 +99,7 @@ def fetch_one(query: str, params: tuple = ()) -> dict | None:
         try:
             cursor = conn.execute(query, params)
             row = cursor.fetchone()
-            return dict(row) if row else None
+            return normalize_row(row) if row else None
         except sqlite3.Error as exc:
             logger.error("DB query error: %s | query: %s", exc, query[:100])
             return None

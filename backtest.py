@@ -143,6 +143,7 @@ async def run_backtest(
     starting_balance: float = 1000.0,
     use_claude: bool = False,
     lookback: int = 200,
+    params: dict | None = None,
 ) -> tuple[list, dict]:
     """Run the strategy over historical candles.
 
@@ -157,18 +158,23 @@ async def run_backtest(
         If False (default), use the local rule-based signal generator.
     lookback : int
         Number of trailing candles used for indicator computation.
+    params : dict | None
+        Optional parameter overrides.  Keys match config.py variable names.
+        Example: ``{"STOP_LOSS_PCT": 0.02, "MIN_CONFIDENCE": 0.55}``
+        Any key NOT present falls back to the ``config`` module default.
 
     Returns
     -------
     (trades, report) : tuple[list[dict], dict]
     """
+    # Merge caller overrides on top of config defaults
     cfg = {
-        "MIN_CONFIDENCE": config.MIN_CONFIDENCE,
-        "MAX_POSITIONS": config.MAX_POSITIONS,
-        "DAILY_LOSS_LIMIT_PCT": config.DAILY_LOSS_LIMIT_PCT,
-        "RISK_PER_TRADE_PCT": config.RISK_PER_TRADE_PCT,
-        "STOP_LOSS_PCT": config.STOP_LOSS_PCT,
-        "TAKE_PROFIT_PCT": config.TAKE_PROFIT_PCT,
+        "MIN_CONFIDENCE": (params or {}).get("MIN_CONFIDENCE", config.MIN_CONFIDENCE),
+        "MAX_POSITIONS": (params or {}).get("MAX_POSITIONS", config.MAX_POSITIONS),
+        "DAILY_LOSS_LIMIT_PCT": (params or {}).get("DAILY_LOSS_LIMIT_PCT", config.DAILY_LOSS_LIMIT_PCT),
+        "RISK_PER_TRADE_PCT": (params or {}).get("RISK_PER_TRADE_PCT", config.RISK_PER_TRADE_PCT),
+        "STOP_LOSS_PCT": (params or {}).get("STOP_LOSS_PCT", config.STOP_LOSS_PCT),
+        "TAKE_PROFIT_PCT": (params or {}).get("TAKE_PROFIT_PCT", config.TAKE_PROFIT_PCT),
     }
 
     portfolio = {
@@ -183,7 +189,11 @@ async def run_backtest(
     open_position: Optional[dict] = None  # only 1 position at a time for simplicity
 
     total_candles = len(candles)
-    sim_start = lookback  # first index where we have enough history
+    sim_start = lookback  # warm-up is never scored
+    fee_rate = (params or {}).get('FEE_RATE', config.FEE_RATE)
+    slippage = (params or {}).get('SLIPPAGE_PCT', config.SLIPPAGE_PCT)
+    current_day = None
+    day_start_balance = starting_balance
 
     logger.info(
         "Backtest: %d candles, lookback=%d, sim range [%d..%d]",
@@ -194,6 +204,12 @@ async def run_backtest(
     trades_attempted = 0
 
     for i in range(sim_start, total_candles):
+        day = datetime.fromtimestamp(candles[i]['timestamp'] / 1000, timezone.utc).date()
+        if day != current_day:
+            current_day = day
+            day_start_balance = portfolio['usdt_balance']
+            portfolio['daily_pnl'] = 0.0
+            portfolio['daily_loss_pct'] = 0.0
         window = candles[i - lookback: i + 1]  # trailing window including current
 
         # ── Compute indicators on the trailing window ────────────
@@ -229,12 +245,16 @@ async def run_backtest(
                     exit_price = pos["take_profit_price"]
 
             if hit_sl or hit_tp:
+                if hit_sl:
+                    exit_price = min(exit_price, candles[i].get('open', exit_price))
+                exit_price *= 1 - slippage
                 # Calculate P&L
                 if pos["side"] == "BUY":
                     pnl = (exit_price - pos["entry_price"]) * pos["quantity"]
                 else:
                     pnl = (pos["entry_price"] - exit_price) * pos["quantity"]
 
+                pnl -= (pos['entry_price'] + exit_price) * pos['quantity'] * fee_rate
                 trade_record = {
                     "side": pos["side"],
                     "entry_price": pos["entry_price"],
@@ -255,7 +275,7 @@ async def run_backtest(
                 if portfolio["usdt_balance"] > 0:
                     portfolio["daily_loss_pct"] = max(
                         0.0,
-                        -portfolio["daily_pnl"] / starting_balance
+                        -portfolio["daily_pnl"] / day_start_balance
                     )
 
                 open_position = None
@@ -277,7 +297,7 @@ async def run_backtest(
 
         signals_generated += 1
 
-        if signal["signal"] == "HOLD":
+        if signal["signal"] != "BUY":
             continue
 
         # ── Risk manager evaluation ──────────────────────────────
@@ -288,14 +308,17 @@ async def run_backtest(
             continue
 
         # ── Open a position ──────────────────────────────────────
-        qty = risk_result["quantity"]
+        if i + 1 >= total_candles:
+            continue
+        fill_price = candles[i + 1]['open'] * (1 + slippage)
+        qty = min(risk_result['quantity'], portfolio['usdt_balance'] / (fill_price * (1 + fee_rate)))
         open_position = {
             "side": signal["signal"],
-            "entry_price": close_price,
+            "entry_price": fill_price,
             "quantity": qty,
             "stop_loss_price": risk_result["stop_loss_price"],
             "take_profit_price": risk_result["take_profit_price"],
-            "entry_idx": i,
+            "entry_idx": i + 1,
             "confidence": signal.get("confidence", 0),
             "reason": signal.get("reason", ""),
         }
@@ -309,12 +332,13 @@ async def run_backtest(
     # ── Force-close any remaining open position at last close ────
     if open_position is not None:
         pos = open_position
-        exit_price = candles[-1].get("close", pos["entry_price"])
+        exit_price = candles[-1].get("close", pos["entry_price"]) * (1 - slippage)
         if pos["side"] == "BUY":
             pnl = (exit_price - pos["entry_price"]) * pos["quantity"]
         else:
             pnl = (pos["entry_price"] - exit_price) * pos["quantity"]
 
+        pnl -= (pos['entry_price'] + exit_price) * pos['quantity'] * fee_rate
         completed_trades.append({
             "side": pos["side"],
             "entry_price": pos["entry_price"],
@@ -331,11 +355,89 @@ async def run_backtest(
 
     # ── Generate performance report ──────────────────────────────
     report = generate_performance_report(completed_trades, starting_balance)
+    report['scope'] = 'Long-only trend benchmark; not the complete live multi-agent strategy'
+    report['costs_included'] = True
     report["candles_processed"] = total_candles - sim_start
     report["signals_generated"] = signals_generated
     report["trades_attempted"] = trades_attempted
 
     return completed_trades, report
+
+
+# =====================================================================
+#  3b. WALK-FORWARD BACKTESTING
+#      Slides a train/test window across the data to detect overfitting.
+# =====================================================================
+
+async def walk_forward_backtest(
+    candles: list,
+    train_candles: int = 2000,
+    test_candles: int = 500,
+    starting_balance: float = 1000.0,
+    params: dict | None = None,
+) -> dict:
+    """Run multiple backtests on sliding train/test windows.
+
+    Parameters
+    ----------
+    candles : list[dict]
+        Full candle history (must be at least ``train_candles + test_candles``).
+    train_candles : int
+        Number of candles in each training window (not used for optimisation
+        yet — reserved for future hyperopt integration).
+    test_candles : int
+        Number of candles in each out-of-sample test window.
+    starting_balance : float
+        Starting USDT balance for each test window.
+    params : dict | None
+        Parameter overrides (same schema as ``run_backtest``).
+
+    Returns
+    -------
+    dict
+        Aggregated walk-forward report with per-window metrics.
+    """
+    total = len(candles)
+    step = test_candles
+    windows: list[dict] = []
+    offset = 0
+
+    while offset + train_candles + test_candles <= total:
+        train_end = offset + train_candles
+        test_end = train_end + test_candles
+
+        test_slice = candles[train_end - 200:test_end]  # warm-up only, then disjoint test bars
+
+        _, report = await run_backtest(
+            test_slice,
+            starting_balance=starting_balance,
+            use_claude=False,
+            lookback=200,
+            params=params,
+        )
+        report["window_start"] = train_end
+        report["window_end"] = test_end
+        windows.append(report)
+
+        offset += step
+
+    if not windows:
+        return {"error": "Not enough data for walk-forward analysis"}
+
+    # Aggregate
+    total_trades = sum(w["total_trades"] for w in windows)
+    total_pnl = sum(w["total_pnl"] for w in windows)
+    avg_win_rate = sum(w["win_rate"] for w in windows) / len(windows)
+    max_dd = max(w["max_drawdown_pct"] for w in windows)
+
+    return {
+        "windows": len(windows),
+        "total_trades": total_trades,
+        "total_pnl": round(total_pnl, 2),
+        "avg_win_rate": round(avg_win_rate, 2),
+        "max_drawdown_pct": round(max_dd, 2),
+        "per_window": windows,
+    }
 
 
 # =====================================================================

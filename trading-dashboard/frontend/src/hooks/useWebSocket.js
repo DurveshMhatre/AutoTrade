@@ -12,8 +12,11 @@ export default function useWebSocket() {
   const [decisions, setDecisions] = useState([])
   const wsRef = useRef(null)
   const retryRef = useRef(1000)
+  const timerRef = useRef(null)
+  const stoppedRef = useRef(false)
 
   const connect = useCallback(() => {
+    if (stoppedRef.current) return
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const host = window.location.host
     const ws = new WebSocket(`${protocol}//${host}/ws`)
@@ -58,7 +61,7 @@ export default function useWebSocket() {
       // Exponential backoff reconnect
       const delay = Math.min(retryRef.current, 30000)
       retryRef.current *= 2
-      setTimeout(connect, delay)
+      if (!stoppedRef.current) timerRef.current = setTimeout(connect, delay)
     }
 
     ws.onerror = () => {
@@ -67,8 +70,12 @@ export default function useWebSocket() {
   }, [])
 
   useEffect(() => {
+    stoppedRef.current = false
     connect()
     return () => {
+      stoppedRef.current = true
+      clearTimeout(timerRef.current)
+      if (wsRef.current) wsRef.current.onclose = null
       if (wsRef.current) wsRef.current.close()
     }
   }, [connect])

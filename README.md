@@ -1,6 +1,27 @@
 # Automated Trading Bot
 
-A production-grade automated BTC/USDT trading bot using the Binance exchange. The bot utilizes a combination of technical indicators (via `pandas-ta`) and AI-powered decision making (via Anthropic Claude) to orchestrate and execute trend-following trades.
+> **CONFIDENTIAL & PROPRIETARY — DURVESH DEVELOPMENTS**
+> *Internal & Commercial Asset. Unauthorized access or reproduction prohibited.*
+> *Copyright © 2026 Durvesh Developments. All Rights Reserved.*
+
+---
+
+
+## Current runtime and verification
+
+The repaired runtime uses durable order/fill accounting, separate mode ledgers, and
+independent exit monitoring. Start safely with:
+
+```powershell
+.\.venv-bot\Scripts\python.exe main.py --check
+.\.venv-bot\Scripts\python.exe main.py --paper
+```
+
+Read [OPERATIONS.md](OPERATIONS.md) for setup, Groq review, preserved data, testing,
+and current limitations. The older overview below describes the original design;
+its production-readiness claims are superseded by these verified limitations.
+
+An experimental automated BTC/USDT trading bot using the Binance exchange. The bot utilizes a combination of technical indicators (via `pandas-ta`) and AI-powered decision making (via Anthropic Claude) to orchestrate and execute trend-following trades.
 
 ## 🚀 Features
 - **AI Orchestrator**: Uses Claude Haiku 4.5 to evaluate market conditions and decide if trading is viable.
@@ -105,12 +126,12 @@ python -m pytest tests/
 - `main.py`: The core event loop tying all modules together.
 - `backtest.py`: Historical simulation engine and reporting.
 - `config.py`: Global trading parameters.
-- `core/`: 
+- `core/`:
   - `data_feed.py`: Async Binance data fetching and streaming.
   - `indicators.py`: Technical indicator computations using `pandas-ta`.
   - `risk_manager.py`: Position sizing and hard-block safety rules.
   - `database.py`: SQLite persistence for candles, trades, and agent decisions.
-- `agents/`: 
+- `agents/`:
   - `orchestrator.py`: AI-based high-level market viability gate.
   - `trend_agent.py`: AI-based signal generation.
 - `execution/`:

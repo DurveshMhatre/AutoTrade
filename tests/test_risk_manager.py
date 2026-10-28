@@ -197,9 +197,10 @@ class TestApprovedTrades:
         # max_risk_dollars = 10_000 * 0.02 = 200.0
         # stop_loss_distance = 65_000 * 0.015 = 975.0
         # quantity = 200 / 975 = 0.205128...
-        expected_quantity = round(200.0 / 975.0, 6)
+        import math
+        expected_quantity = math.floor(min(200.0 / 975.0, 10000 / (65000 * 1.001)) * 1e6) / 1e6
         assert result["quantity"] == expected_quantity
-        assert result["risk_dollars"] == 200.0
+        assert result["risk_dollars"] == round(expected_quantity * 975, 2)
 
     def test_correct_buy_price_levels(self):
         """Verify BUY stop-loss and take-profit prices."""

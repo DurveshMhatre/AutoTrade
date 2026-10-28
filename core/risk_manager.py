@@ -9,6 +9,7 @@ If all blocks pass, position sizing and price levels are computed.
 """
 
 import logging
+import math
 
 logger = logging.getLogger(__name__)
 
@@ -198,7 +199,7 @@ def evaluate_trade(
     # ── POSITION SIZING ───────────────────────────────────────────────────
 
     close_price = market_data.get("close", 0.0)
-    if close_price <= 0:
+    if not isinstance(close_price, (float, int)) or not math.isfinite(close_price) or close_price <= 0:
         logger.error("Risk block: invalid close price %.4f", close_price)
         return _rejected("invalid_price")
 
@@ -213,7 +214,10 @@ def evaluate_trade(
         logger.error("Risk block: stop_loss_distance is zero or negative")
         return _rejected("invalid_price")
 
-    quantity = round(max_risk_dollars / stop_loss_distance, 6)
+    # Spot cash is a hard upper bound; never imply borrowing in the backtester.
+    fee_rate = config.get("FEE_RATE", 0.001)
+    cash_quantity = portfolio.get("usdt_balance", 0.0) / (close_price * (1 + fee_rate))
+    quantity = math.floor(min(max_risk_dollars / stop_loss_distance, cash_quantity) * 1e6) / 1e6
 
     # Binance minimum check
     if quantity < MIN_BTC_QUANTITY:
@@ -234,7 +238,7 @@ def evaluate_trade(
         stop_loss_price = round(close_price * (1 + stop_loss_pct), 2)
         take_profit_price = round(close_price * (1 - take_profit_pct), 2)
 
-    risk_dollars = round(max_risk_dollars, 2)
+    risk_dollars = round(quantity * stop_loss_distance, 2)
 
     logger.info(
         "Trade APPROVED: %s %.6f BTC | SL=%.2f | TP=%.2f | risk=$%.2f",

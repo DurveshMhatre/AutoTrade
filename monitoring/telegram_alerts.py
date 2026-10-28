@@ -65,12 +65,6 @@ async def send_alert(message: str, alert_type: str = "info") -> bool:
     """
     global _last_alert_ts
 
-    # Rate limiting — skip if too soon after last alert
-    now = time.time()
-    if now - _last_alert_ts < _MIN_ALERT_INTERVAL:
-        logger.debug("Telegram rate limited — skipping alert (type=%s)", alert_type)
-        return True
-    _last_alert_ts = now
     prefix = ALERT_PREFIXES.get(alert_type, ALERT_PREFIXES["info"])
     full_message = f"{prefix} | {message}"
 
@@ -82,6 +76,12 @@ async def send_alert(message: str, alert_type: str = "info") -> bool:
         print(f"[TELEGRAM-STDOUT] {full_message}")
         logger.info("Telegram credentials not set — printed to stdout")
         return True
+
+    now = time.time()
+    if now - _last_alert_ts < _MIN_ALERT_INTERVAL:
+        logger.debug('Telegram rate limited; caller may retry')
+        return False
+    _last_alert_ts = now
 
     # ── Send via Telegram Bot API ─────────────────────────────────────
     url = f"https://api.telegram.org/bot{token}/sendMessage"

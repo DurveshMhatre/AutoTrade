@@ -18,17 +18,15 @@ async def get_open_positions():
     if not rows:
         return []
 
-    # Fetch current BTC price for unrealized P&L calculation
-    current_price = None
+    prices = {}
     try:
         import httpx
         async with httpx.AsyncClient(timeout=5) as client:
-            resp = await client.get(
-                "https://api.binance.com/api/v3/ticker/price",
-                params={"symbol": "BTCUSDT"},
-            )
-            if resp.status_code == 200:
-                current_price = float(resp.json().get("price", 0))
+            for symbol in {row["symbol"] for row in rows}:
+                resp = await client.get("https://api.binance.com/api/v3/ticker/price",
+                                       params={"symbol":symbol.replace("/", "")})
+                if resp.status_code == 200:
+                    prices[symbol] = float(resp.json()["price"])
     except Exception:
         pass
 
@@ -37,7 +35,9 @@ async def get_open_positions():
         entry_price = row.get("price", 0) or 0
         qty = row.get("quantity", 0) or 0
         side = row.get("side", "buy")
-        cp = current_price or entry_price
+        cp = prices.get(row["symbol"])
+        stale = cp is None
+        cp = cp if cp is not None else entry_price
 
         if side.lower() == "buy":
             unrealized = (cp - entry_price) * qty
@@ -50,13 +50,14 @@ async def get_open_positions():
             "symbol": row.get("symbol", "BTC/USDT"),
             "side": side,
             "entry_price": entry_price,
-            "current_price": cp,
+            "current_price": None if stale else cp,
+            "price_unavailable": stale,
             "quantity": qty,
-            "unrealized_pnl": round(unrealized, 2),
-            "unrealized_pnl_pct": round(unrealized_pct, 2),
+            "unrealized_pnl": None if stale else round(unrealized, 2),
+            "unrealized_pnl_pct": None if stale else round(unrealized_pct, 2),
             "entry_time": str(row.get("timestamp", "")),
-            "stop_loss": None,    # Will be populated from trade metadata later
-            "take_profit": None,
+            "stop_loss": row.get("stop_loss"),
+            "take_profit": row.get("take_profit"),
         })
 
     return positions

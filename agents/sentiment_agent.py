@@ -398,6 +398,7 @@ async def run_sentiment_agent() -> dict:
         use_ai = False
 
     if use_ai:
-        return _ai_sentiment_signal(raw_data)
+        import asyncio
+        return await asyncio.to_thread(_ai_sentiment_signal, raw_data)
     else:
         return _local_sentiment_signal(raw_data)

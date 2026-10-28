@@ -95,7 +95,7 @@ def _fetch_data_for_analysis(analysis_type: str) -> dict:
     if analysis_type == "daily_review":
         # Today's trades + summary + last 5 decisions
         all_trades = fetch_all(
-            "SELECT * FROM trades WHERE pnl IS NOT NULL ORDER BY timestamp ASC"
+            "SELECT * FROM trades WHERE status = 'closed' ORDER BY timestamp ASC"
         )
         data["summary"] = compute_summary(all_trades)
         data["today_trades"] = fetch_all(
@@ -109,7 +109,7 @@ def _fetch_data_for_analysis(analysis_type: str) -> dict:
     elif analysis_type == "losing_streak":
         # Last N trades to find consecutive losses
         recent = fetch_all(
-            "SELECT * FROM trades WHERE pnl IS NOT NULL ORDER BY timestamp DESC LIMIT 20"
+            "SELECT * FROM trades WHERE status = 'closed' ORDER BY timestamp DESC LIMIT 20"
         )
         data["recent_trades"] = recent
         data["streak_info"] = compute_win_streak(recent)
@@ -117,7 +117,7 @@ def _fetch_data_for_analysis(analysis_type: str) -> dict:
     elif analysis_type == "strategy_check":
         # Last 7 days of trades + hourly breakdown
         all_trades = fetch_all(
-            "SELECT * FROM trades WHERE pnl IS NOT NULL ORDER BY timestamp ASC"
+            "SELECT * FROM trades WHERE status = 'closed' ORDER BY timestamp ASC"
         )
         data["summary"] = compute_summary(all_trades)
         data["hourly_breakdown"] = compute_hourly_breakdown(all_trades)
@@ -129,7 +129,7 @@ def _fetch_data_for_analysis(analysis_type: str) -> dict:
     elif analysis_type == "full_audit":
         # Everything
         all_trades = fetch_all(
-            "SELECT * FROM trades WHERE pnl IS NOT NULL ORDER BY timestamp ASC"
+            "SELECT * FROM trades WHERE status = 'closed' ORDER BY timestamp ASC"
         )
         data["summary"] = compute_summary(all_trades)
         data["equity_curve"] = compute_equity_curve(all_trades)

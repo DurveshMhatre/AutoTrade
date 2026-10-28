@@ -50,7 +50,7 @@ async def get_orders(
 async def get_order_summary():
     """Aggregated performance summary computed from all trades."""
     trades = fetch_all(
-        "SELECT * FROM trades WHERE pnl IS NOT NULL ORDER BY timestamp ASC"
+        "SELECT * FROM trades WHERE status = 'closed' ORDER BY timestamp ASC"
     )
 
     if not trades:
@@ -82,10 +82,10 @@ async def get_order_summary():
 
     # Today's P&L
     today_pnl = fetch_scalar(
-        "SELECT COALESCE(SUM(pnl), 0) FROM trades WHERE date(timestamp/1000, 'unixepoch') = date('now')"
+        "SELECT COALESCE(SUM(pnl), 0) FROM trades WHERE date(CASE WHEN timestamp > 100000000000 THEN timestamp/1000 ELSE timestamp END, 'unixepoch') = date('now')"
     ) or 0.0
     today_trades = fetch_scalar(
-        "SELECT COUNT(*) FROM trades WHERE date(timestamp/1000, 'unixepoch') = date('now')"
+        "SELECT COUNT(*) FROM trades WHERE date(CASE WHEN timestamp > 100000000000 THEN timestamp/1000 ELSE timestamp END, 'unixepoch') = date('now')"
     ) or 0
 
     return {

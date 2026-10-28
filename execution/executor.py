@@ -16,6 +16,7 @@ fetch_open_orders      -- fetch all open orders for reconciliation
 import asyncio
 import logging
 import os
+import time
 
 import aiohttp
 import ccxt.async_support as ccxt
@@ -24,6 +25,40 @@ from dotenv import load_dotenv
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Dry-run (paper trading) helpers
+# ---------------------------------------------------------------------------
+_dry_run_order_counter = 0
+_paper_orders = {}
+
+
+def _mock_order(side: str, symbol: str, quantity: float, price: float, order_type: str = "market") -> dict:
+    """Return a fake CCXT-compatible order dict for dry-run mode."""
+    global _dry_run_order_counter
+    _dry_run_order_counter += 1
+    oid = f"DRYRUN-{_dry_run_order_counter}"
+    order = {
+        "id": oid,
+        "clientOrderId": oid,
+        "timestamp": int(time.time() * 1000),
+        "datetime": None,
+        "symbol": symbol,
+        "type": order_type,
+        "side": side,
+        "price": price,
+        "amount": quantity,
+        "cost": price * quantity,
+        "filled": quantity,
+        "remaining": 0.0,
+        "average": price,
+        "status": "closed",
+        "fee": {"cost": price * quantity * 0.001, "currency": "USDT"},
+        "info": {"dry_run": True},
+    }
+    _paper_orders[oid] = order
+    return dict(order)
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +157,22 @@ async def place_order(
         Full ccxt order dict on success, or
         ``{"status": "failed", "error": "..."}`` on failure.
     """
+    # ── Dry-run bypass ────────────────────────────────────────────
+    import config as _cfg
+    if getattr(_cfg, "DRY_RUN", False):
+        # Fetch a live price for realistic simulation (best-effort)
+        try:
+            _ex = _build_exchange(testnet=testnet)
+            ticker = await _ex.fetch_ticker(symbol)
+            sim_price = ticker.get("last", 0) or ticker.get("close", 0)
+            await _close_exchange(_ex)
+        except Exception:
+            sim_price = 0.0
+        mock = _mock_order(side, symbol, quantity, sim_price, "market")
+        logger.info("[DRY-RUN] Simulated MARKET %s: %.6f %s @ $%.2f (id=%s)",
+                    side.upper(), quantity, symbol, sim_price, mock["id"])
+        return mock
+
     own_exchange = exchange is None
     if own_exchange:
         exchange = _build_exchange(testnet=testnet)
@@ -162,6 +213,29 @@ async def smart_entry(
     exchange : ccxt.binance | None
         If provided, reuse this exchange session.
     """
+    # ── Dry-run bypass ────────────────────────────────────────────
+    import config as _cfg
+    if getattr(_cfg, "DRY_RUN", False):
+        orders = []
+        if side.lower() == "buy":
+            t1_price = entry_price
+            t2_price = entry_price - (atr * 0.1)
+            t3_price = entry_price - (atr * 0.2)
+        else:
+            t1_price = entry_price
+            t2_price = entry_price + (atr * 0.1)
+            t3_price = entry_price + (atr * 0.2)
+
+        for price, pct in [(t1_price, 0.50), (t2_price, 0.30), (t3_price, 0.20)]:
+            qty = quantity * pct
+            if qty < 0.0001:
+                continue
+            mock = _mock_order(side, symbol, qty, price, "limit")
+            orders.append(mock)
+            logger.info("[DRY-RUN] Simulated LIMIT %s: %.6f %s @ $%.2f (id=%s)",
+                        side.upper(), qty, symbol, price, mock["id"])
+        return orders
+
     own_exchange = exchange is None
     if own_exchange:
         exchange = _build_exchange(testnet=testnet)
@@ -235,6 +309,11 @@ async def check_order_status(
         ``{"id", "status", "filled", "remaining", "average"}``
         status is one of: "open", "closed", "canceled"
     """
+    # ── Dry-run bypass — all simulated orders fill instantly ──────
+    if str(order_id).startswith("DRYRUN-"):
+        return dict(_paper_orders.get(str(order_id), {
+            "id": order_id, "status": "unknown", "filled": 0, "remaining": 0, "average": None}))
+
     own_exchange = exchange is None
     if own_exchange:
         exchange = _build_exchange(testnet=testnet)

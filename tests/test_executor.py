@@ -5,9 +5,11 @@ from unittest.mock import AsyncMock, patch
 from execution.executor import smart_entry, cancel_all_open_orders
 
 @pytest.mark.asyncio
-async def test_smart_entry_success():
+async def test_smart_entry_success(monkeypatch):
     """Test smart_entry splits the order correctly."""
     
+    import config
+    monkeypatch.setattr(config, "DRY_RUN", False)
     mock_exchange = AsyncMock()
     mock_exchange.create_limit_order.return_value = {"id": "123", "status": "open"}
     
@@ -40,9 +42,11 @@ async def test_smart_entry_success():
         assert kwargs3["amount"] == 0.2
 
 @pytest.mark.asyncio
-async def test_smart_entry_skips_small_orders():
+async def test_smart_entry_skips_small_orders(monkeypatch):
     """Test smart_entry skips micro orders below Binance limit."""
     
+    import config
+    monkeypatch.setattr(config, "DRY_RUN", False)
     mock_exchange = AsyncMock()
     
     with patch("execution.executor._build_exchange", return_value=mock_exchange), \

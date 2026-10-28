@@ -48,6 +48,7 @@ def _build_exchange(*, authenticated: bool = False, testnet: bool | None = None)
 
     config: dict = {
         "enableRateLimit": True,
+        "timeout": 10000,
         "options": {
             "defaultType": "spot",
             "fetchMarkets": ["spot"],
