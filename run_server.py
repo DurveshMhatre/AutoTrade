@@ -25,3 +25,4 @@ if __name__ == "__main__":
     print(f"[Render] Starting FastAPI Backend on port {port}...", flush=True)
     from backend.main import app
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
+
