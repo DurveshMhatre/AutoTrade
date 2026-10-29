@@ -1,6 +1,8 @@
 ccxt
 pandas
-git+https://github.com/twopirllc/pandas-ta.git
+pandas-ta-classic
 python-dotenv
 aiohttp
 websockets
+fastapi
+uvicorn
