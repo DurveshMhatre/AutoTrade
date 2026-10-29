@@ -19,7 +19,14 @@ export default function useWebSocket() {
     if (stoppedRef.current) return
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const host = window.location.host
-    const ws = new WebSocket(`${protocol}//${host}/ws`)
+    const wsUrl = import.meta.env.VITE_WS_URL || `${protocol}//${host}/ws`
+    let ws
+    try {
+      ws = new WebSocket(wsUrl)
+    } catch (e) {
+      console.warn('WebSocket connection error:', e)
+      return
+    }
     wsRef.current = ws
 
     ws.onopen = () => {
@@ -30,42 +37,40 @@ export default function useWebSocket() {
     ws.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data)
-
         switch (msg.type) {
-          case 'snapshot':
-            if (msg.data?.current_btc_price) setPrice(msg.data.current_btc_price)
-            if (msg.data?.bot_status) setBotStatus(msg.data.bot_status)
-            break
-          case 'price':
-            setPrice(msg.price)
-            break
-          case 'new_trade':
-            setLastTrade(msg.trade)
-            break
-          case 'new_decision':
-            setDecisions(prev => [msg.decision, ...prev].slice(0, 50))
-            break
-          case 'bot_status':
+          case 'heartbeat':
             setBotStatus(msg.status)
             break
-          case 'ping':
+          case 'price':
+            setPrice(msg.data)
+            break
+          case 'trade':
+            setLastTrade(msg.data)
+            break
+          case 'decision':
+            setDecisions((prev) => [msg.data, ...prev.slice(0, 49)])
+            break
+          default:
             break
         }
-      } catch {
-        // Ignore malformed messages
+      } catch (err) {
+        console.error('WS parse error:', err)
       }
+    }
+
+    ws.onerror = () => {
+      // Handled by onclose
     }
 
     ws.onclose = () => {
       setConnected(false)
-      // Exponential backoff reconnect
-      const delay = Math.min(retryRef.current, 30000)
-      retryRef.current *= 2
-      if (!stoppedRef.current) timerRef.current = setTimeout(connect, delay)
-    }
-
-    ws.onerror = () => {
-      ws.close()
+      wsRef.current = null
+      if (!stoppedRef.current) {
+        // Exponential backoff up to 30s
+        const delay = Math.min(retryRef.current, 30000)
+        timerRef.current = setTimeout(connect, delay)
+        retryRef.current = delay * 1.5
+      }
     }
   }, [])
 
@@ -74,8 +79,7 @@ export default function useWebSocket() {
     connect()
     return () => {
       stoppedRef.current = true
-      clearTimeout(timerRef.current)
-      if (wsRef.current) wsRef.current.onclose = null
+      if (timerRef.current) clearTimeout(timerRef.current)
       if (wsRef.current) wsRef.current.close()
     }
   }, [connect])
