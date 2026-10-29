@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { TrendingUp, TrendingDown, DollarSign, BarChart2, Target } from 'lucide-react'
-import { useOrderSummary, useEquityCurve, useDecisions, useOrders } from '../hooks/useApi'
+import { useOrderSummary, useEquityCurve, useDecisions, useOrders, usePositions } from '../hooks/useApi'
 import MetricCard from '../components/MetricCard'
 import EquityChart from '../components/EquityChart'
 import OrdersTable from '../components/OrdersTable'
@@ -95,32 +95,4 @@ export default function Dashboard({ wsData = {} }) {
       </div>
     </div>
   )
-}
-
-/** Hook for fetching open positions */
-function usePositions() {
-  const [data, setData] = useState(null)
-  const [loading, setLoading] = useState(true)
-
-  useEffect(() => {
-    const fetchPositions = async () => {
-      try {
-        const resp = await fetch('/api/positions/open')
-        if (resp.ok) {
-          const json = await resp.json()
-          setData(json)
-        }
-      } catch {
-        // Silently fail
-      } finally {
-        setLoading(false)
-      }
-    }
-
-    fetchPositions()
-    const interval = setInterval(fetchPositions, 15000)
-    return () => clearInterval(interval)
-  }, [])
-
-  return { data, loading }
 }

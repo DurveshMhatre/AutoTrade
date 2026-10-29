@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 
-const API_BASE = import.meta.env.VITE_API_URL || '/api'
+export const API_BASE = import.meta.env.VITE_API_URL || '/api'
 
 /**
  * Generic fetch hook with auto-refresh.
@@ -89,6 +89,11 @@ export function useStreaks() {
 /** P&L distribution histogram */
 export function usePnlDistribution() {
   return useApi('/performance/pnl-distribution', 60000)
+}
+
+/** Open positions */
+export function usePositions(refreshInterval = 15000) {
+  return useApi('/positions/open', refreshInterval)
 }
 
 export default useApi

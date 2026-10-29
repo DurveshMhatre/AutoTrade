@@ -22,10 +22,11 @@ DB_PATH = os.getenv(
 
 # ── CORS ────────────────────────────────────────────────────────────
 CORS_ORIGINS = [
-    "http://localhost:5173",       # Vite dev server
+    "https://auto-trade-hazel.vercel.app",
+    "http://localhost:5173",
     "http://127.0.0.1:5173",
     "http://localhost:3000",
-    os.getenv("DASHBOARD_ORIGIN", "http://localhost:5173"),
+    os.getenv("DASHBOARD_ORIGIN", "https://auto-trade-hazel.vercel.app"),
 ]
 
 # ── API Keys ────────────────────────────────────────────────────────

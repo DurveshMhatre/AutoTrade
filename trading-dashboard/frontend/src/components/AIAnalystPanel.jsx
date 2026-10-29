@@ -7,6 +7,7 @@
  */
 
 import { useState, useEffect } from 'react'
+import { API_BASE } from '../hooks/useApi'
 import {
   Brain, Sparkles, AlertTriangle, CheckCircle2,
   Loader2, Shield, TrendingUp, Zap, Search
@@ -71,7 +72,7 @@ export default function AIAnalystPanel() {
   useEffect(() => {
     const loadCached = async () => {
       try {
-        const resp = await fetch('/api/agent/daily-summary')
+        const resp = await fetch(`${API_BASE}/agent/daily-summary`)
         if (resp.ok) {
           const data = await resp.json()
           if (data.analysis && !data.analysis.includes('not configured') && !data.analysis.includes('Not Configured')) {
@@ -92,7 +93,7 @@ export default function AIAnalystPanel() {
     setAutoLoaded(false)
 
     try {
-      const resp = await fetch('/api/agent/analyze', {
+      const resp = await fetch(`${API_BASE}/agent/analyze`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ analysis_type: analysisType }),

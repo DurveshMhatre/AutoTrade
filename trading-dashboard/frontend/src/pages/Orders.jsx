@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Download, Filter } from 'lucide-react'
 import OrdersTable from '../components/OrdersTable'
+import { API_BASE } from '../hooks/useApi'
 
 export default function Orders() {
   const [page, setPage] = useState(1)
@@ -18,7 +19,7 @@ export default function Orders() {
       const params = new URLSearchParams({ limit: String(limit), page: String(page) })
       if (sideFilter !== 'all') params.set('side', sideFilter)
 
-      const resp = await fetch(`/api/orders?${params}`)
+      const resp = await fetch(`${API_BASE}/orders?${params}`)
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
       const json = await resp.json()
       setData(json)
