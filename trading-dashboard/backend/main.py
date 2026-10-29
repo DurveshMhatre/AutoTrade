@@ -39,8 +39,15 @@ app.include_router(agent.router, prefix="/api")
 app.include_router(ws_router.router)  # WebSocket at /ws (no prefix)
 
 
-# ── Health Check ────────────────────────────────────────────────────
+# ── Root & Health Check ─────────────────────────────────────────────
+@app.get("/")
+@app.head("/")
+async def root():
+    return {"status": "ok", "message": "AutoTrade API & Bot running 24/7"}
+
+
 @app.get("/api/health")
+@app.head("/api/health")
 async def health():
     """Simple health check endpoint."""
     return {"status": "ok", "service": "trading-dashboard"}
